@@ -1,0 +1,367 @@
+edition 7;
+
+// `opt` — numerical optimisation as a command line (docs/design.md).
+//
+//     opt minimize --x0 LIST (--objective sphere|rosenbrock|quadratic|absolute | -- PROGRAM [ARG...])
+//                  [--method nelder-mead] [--lower LIST] [--upper LIST] [--step S] [--xatol X] [--fatol F] [--maxfev N] [--maxiter N]
+//
+// Standard output, one JSON object:
+//
+//     {"method": "nelder-mead", "x": [...], "fun": F, "nfev": N, "nit": N, "converged": true, "message": "..."}
+//
+// Exit status 0 when it converged, 1 when a limit was reached (the result is printed all the same), 2 on a refusal. A refusal prints nothing on
+// standard output and, on standard error, one JSON object `{"error": "opt.<rule>", "message": "...", "repair": "..."}`; the rule tags are
+// listed in docs/design.md section 8. Reference: scipy.optimize.minimize, which `scripts/check_scipy.py` compares this with bit for bit.
+
+import opt.lists;
+import opt.nm;
+import opt.objective;
+import std.buffer;
+import std.bytes;
+import std.io;
+import std.json;
+
+// A refusal: one JSON object on standard error, status 2. `point` (when not empty) is added as the point the objective failed at.
+fn emit[&h, &i, &p](heap: &!h Heap, io: &!i Io, rule: &static [byte], message: &static [byte], repair: &static [byte], point: &p [float], with_point: bool) -> [heap, err_write] int {
+    var w = json.writer(heap, 256);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "error");
+    w = json.put_string(heap, w, rule);
+    w = json.put_key(heap, w, "message");
+    w = json.put_string(heap, w, message);
+    w = json.put_key(heap, w, "repair");
+    w = json.put_string(heap, w, repair);
+    if with_point {
+        w = json.put_key(heap, w, "point");
+        w = json.begin_array(heap, w);
+        var k = 0;
+        while k < len(point) {
+            w = json.put_float(heap, w, point[k]);
+            k = k + 1;
+        }
+        w = json.end_array(heap, w);
+    }
+    w = json.end_object(heap, w);
+    let out = buffer.push(heap, json.finish(w), byte_of(10));
+    borrow out as &or in {
+        io.error_all(io, buffer.bytes(or));
+    }
+    buffer.drop(heap, out);
+    return 2;
+}
+
+fn refuse[&h, &i](heap: &!h Heap, io: &!i Io, rule: &static [byte], message: &static [byte], repair: &static [byte]) -> [heap, err_write] int {
+    region r {
+        let none = alloc_slice[r](1, 0.0);
+        emit(heap, io, rule, message, repair, none, false);
+    }
+    return 2;
+}
+
+fn refuse_at[&h, &i, &p](heap: &!h Heap, io: &!i Io, rule: &static [byte], message: &static [byte], repair: &static [byte], point: &p [float]) -> [heap, err_write] int {
+    return emit(heap, io, rule, message, repair, point, true);
+}
+
+fn print_result[&h, &i, &b](heap: &!h Heap, io: &!i Io, best: &b [float], fun: float, nfev: int, nit: int, status: int) -> [heap, io_write] int {
+    var w = json.writer(heap, 256);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "method");
+    w = json.put_string(heap, w, "nelder-mead");
+    w = json.put_key(heap, w, "x");
+    w = json.begin_array(heap, w);
+    var k = 0;
+    while k < len(best) {
+        w = json.put_float(heap, w, best[k]);
+        k = k + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.put_key(heap, w, "fun");
+    w = json.put_float(heap, w, fun);
+    w = json.put_key(heap, w, "nfev");
+    w = json.put_int(heap, w, nfev);
+    w = json.put_key(heap, w, "nit");
+    w = json.put_int(heap, w, nit);
+    w = json.put_key(heap, w, "converged");
+    w = json.put_bool(heap, w, status == 0);
+    w = json.put_key(heap, w, "message");
+    if status == 0 {
+        w = json.put_string(heap, w, "Optimization terminated successfully.");
+    } else if status == 1 {
+        w = json.put_string(heap, w, "Maximum number of function evaluations has been exceeded.");
+    } else {
+        w = json.put_string(heap, w, "Maximum number of iterations has been exceeded.");
+    }
+    w = json.end_object(heap, w);
+    let out = buffer.push(heap, json.finish(w), byte_of(10));
+    borrow out as &or in {
+        buffer.write(io, or);
+    }
+    buffer.drop(heap, out);
+    return 0;
+}
+
+// The value of `--name V` among the arguments before the `--` (index `stop`); `found` is false when it is not there.
+fn flag[&g](args: &g Args, stop: int, name: &static [byte]) -> [args] (bool, &static [byte]) {
+    var k = 2;
+    while k < stop {
+        if bytes.equal(arg(args, k), name) {
+            if k + 1 < stop {
+                return (true, arg(args, k + 1));
+            }
+            return (true, arg(args, 0)[0..0]);
+        }
+        k = k + 1;
+    }
+    return (false, arg(args, 0)[0..0]);
+}
+
+// is `name` one of the flags `minimize` takes?
+fn known(name: &static [byte]) -> [] bool {
+    return bytes.equal(name, "--method") || bytes.equal(name, "--x0") || bytes.equal(name, "--lower") || bytes.equal(name, "--upper") || bytes.equal(name, "--step") || bytes.equal(name, "--xatol") || bytes.equal(name, "--fatol") || bytes.equal(name, "--maxfev") || bytes.equal(name, "--maxiter") || bytes.equal(name, "--objective");
+}
+
+fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, args: &g Args) -> [heap, io_write, err_write, exec(""), clock, poll, args] int {
+    var stop = arg_count(args);
+    var k = 2;
+    while k < arg_count(args) {
+        if bytes.equal(arg(args, k), "--") {
+            stop = k;
+            k = arg_count(args);
+        }
+        k = k + 1;
+    }
+    // every argument before `--` is a known flag followed by its value
+    k = 2;
+    while k < stop {
+        if !known(arg(args, k)) {
+            return refuse(heap, io, "opt.unknown-flag", "an argument is not a flag of `opt minimize`", "the flags are --x0 --objective --method --lower --upper --step --xatol --fatol --maxfev --maxiter, then `-- PROGRAM ARGS`");
+        }
+        if k + 1 >= stop {
+            return refuse(heap, io, "opt.usage", "a flag has no value", "write each flag as `--name VALUE`");
+        }
+        k = k + 2;
+    }
+    let (has_method, method) = flag(args, stop, "--method");
+    if has_method && !bytes.equal(method, "nelder-mead") {
+        return refuse(heap, io, "opt.unknown-method", "the only method is nelder-mead", "use --method nelder-mead (docs/design.md section 1 lists what is not built)");
+    }
+    let (has_x0, x0_text) = flag(args, stop, "--x0");
+    if !has_x0 {
+        return refuse(heap, io, "opt.usage", "--x0 is required", "give the starting point, comma separated: --x0 1,2,3");
+    }
+    let n = lists.count(x0_text);
+    if n < 1 {
+        return refuse(heap, io, "opt.usage", "--x0 is empty", "give at least one number");
+    }
+    if n > 32 {
+        return refuse(heap, io, "opt.too-many-parameters", "more than 32 parameters", "optimise fewer, or split the problem");
+    }
+    var kind = 0 - 1;
+    let (has_obj, obj_name) = flag(args, stop, "--objective");
+    if has_obj {
+        kind = objective.kind_of(obj_name);
+        if kind < 0 || stop < arg_count(args) {
+            return refuse(heap, io, "opt.usage", "give one objective: --objective sphere|rosenbrock|quadratic|absolute, or `-- PROGRAM`, not both", "see docs/design.md section 4");
+        }
+    } else if stop + 1 < arg_count(args) {
+        kind = 0;
+    } else {
+        return refuse(heap, io, "opt.usage", "no objective", "give --objective sphere|rosenbrock|quadratic|absolute, or `-- PROGRAM [ARG...]`");
+    }
+    let x0 = box_slice(heap, n, 0.0);
+    let lower = box_slice(heap, n, 0.0 - 1.0e300);
+    let upper = box_slice(heap, n, 1.0e300);
+    let best = box_slice(heap, n, 0.0);
+    var status = 0;
+    var bad = 0;
+    var step = 0.0;
+    var xatol = 0.0001;
+    var fatol = 0.0001;
+    var maxfev = 0 - 1;
+    var maxiter = 0 - 1;
+    borrow mut x0 as &!xw in {
+        bad = lists.read_into(x0_text, contents(xw));
+    }
+    if bad != 0 {
+        status = refuse(heap, io, "opt.bad-number", "--x0 holds something that is not a finite number", "write numbers like 1, -2.5, 3e-2");
+    }
+    let (has_lo, lo_text) = flag(args, stop, "--lower");
+    if status == 0 && has_lo {
+        if lists.count(lo_text) != n {
+            status = refuse(heap, io, "opt.bounds-length", "--lower does not have as many numbers as --x0", "give one lower bound per parameter (inf and -inf mean none)");
+        } else {
+            borrow mut lower as &!lw in {
+                bad = lists.read_into(lo_text, contents(lw));
+            }
+            if bad != 0 {
+                status = refuse(heap, io, "opt.bad-number", "--lower holds something that is not a number", "write numbers like 1, -2.5, 3e-2, -inf");
+            }
+        }
+    }
+    let (has_hi, hi_text) = flag(args, stop, "--upper");
+    if status == 0 && has_hi {
+        if lists.count(hi_text) != n {
+            status = refuse(heap, io, "opt.bounds-length", "--upper does not have as many numbers as --x0", "give one upper bound per parameter (inf and -inf mean none)");
+        } else {
+            borrow mut upper as &!uw in {
+                bad = lists.read_into(hi_text, contents(uw));
+            }
+            if bad != 0 {
+                status = refuse(heap, io, "opt.bad-number", "--upper holds something that is not a number", "write numbers like 1, -2.5, 3e-2, inf");
+            }
+        }
+    }
+    if status == 0 {
+        borrow lower as &lr in {
+            borrow upper as &ur in {
+                var j = 0;
+                while j < n {
+                    if contents(lr)[j] > contents(ur)[j] {
+                        status = refuse(heap, io, "opt.bounds-order", "a lower bound is above its upper bound", "swap them");
+                    }
+                    j = j + 1;
+                }
+            }
+        }
+    }
+    let (has_step, step_text) = flag(args, stop, "--step");
+    let (has_xa, xa_text) = flag(args, stop, "--xatol");
+    let (has_fa, fa_text) = flag(args, stop, "--fatol");
+    if status == 0 && has_step {
+        let (ok, v) = lists.number(step_text);
+        if !ok || v == 0.0 {
+            status = refuse(heap, io, "opt.bad-number", "--step is not a non-zero finite number", "give the size of the first move along each axis, e.g. 0.5; leave it out for scipy's 5 percent rule");
+        } else {
+            step = v;
+        }
+    }
+    if status == 0 && has_xa {
+        let (ok, v) = lists.number(xa_text);
+        if !ok || v < 0.0 {
+            status = refuse(heap, io, "opt.bad-number", "--xatol is not a non-negative finite number", "e.g. 1e-4");
+        } else {
+            xatol = v;
+        }
+    }
+    if status == 0 && has_fa {
+        let (ok, v) = lists.number(fa_text);
+        if !ok || v < 0.0 {
+            status = refuse(heap, io, "opt.bad-number", "--fatol is not a non-negative finite number", "e.g. 1e-4");
+        } else {
+            fatol = v;
+        }
+    }
+    let (has_mf, mf_text) = flag(args, stop, "--maxfev");
+    let (has_mi, mi_text) = flag(args, stop, "--maxiter");
+    if status == 0 && has_mf {
+        maxfev = lists.natural(mf_text);
+        if maxfev < 1 {
+            status = refuse(heap, io, "opt.bad-number", "--maxfev is not a positive integer below 10^9", "e.g. 400");
+        }
+    }
+    if status == 0 && has_mi {
+        maxiter = lists.natural(mi_text);
+        if maxiter < 1 {
+            status = refuse(heap, io, "opt.bad-number", "--maxiter is not a positive integer below 10^9", "e.g. 400");
+        }
+    }
+    if status == 0 {
+        // scipy's rule for the limits: 200 N each when neither is given; the one that is not given is unlimited
+        if maxfev < 0 && maxiter < 0 {
+            maxfev = 200 * n;
+            maxiter = 200 * n;
+        } else if maxfev < 0 {
+            maxfev = 1000000000;
+        } else if maxiter < 0 {
+            maxiter = 1000000000;
+        }
+        // the program: its name, and its arguments each followed by a NUL
+        var program = arg(args, 0)[0..0];
+        var argv = buffer.empty(heap, 16);
+        if kind == 0 {
+            program = arg(args, stop + 1);
+            var j = stop + 2;
+            while j < arg_count(args) {
+                argv = buffer.append(heap, argv, arg(args, j));
+                argv = buffer.push(heap, argv, byte_of(0));
+                j = j + 1;
+            }
+        } else {
+            kind = kind;
+        }
+        var fun = 0.0;
+        var nfev = 0;
+        var nit = 0;
+        var code = 0;
+        borrow x0 as &xr in {
+            borrow lower as &lr in {
+                borrow upper as &ur in {
+                    borrow mut best as &!bw in {
+                        borrow argv as &ar in {
+                            let (st, f, fe, it) = nm.minimize(heap, io, exec, clock, kind, program, buffer.bytes(ar), contents(xr), contents(lr), contents(ur), step, xatol, fatol, maxfev, maxiter, contents(bw));
+                            code = st;
+                            fun = f;
+                            nfev = fe;
+                            nit = it;
+                            if st >= 10 {
+                                if st == 11 {
+                                    status = refuse_at(heap, io, "opt.objective-failed", "the objective program could not be started", "check the path after `--`; its environment is PATH and HOME=/tmp only", contents(bw));
+                                } else if st == 12 {
+                                    status = refuse_at(heap, io, "opt.objective-failed", "the objective program exited with a status other than 0 at the point shown", "run it by hand with that point on standard input", contents(bw));
+                                } else if st == 13 {
+                                    status = refuse_at(heap, io, "opt.objective-output", "the objective program did not print exactly one number at the point shown", "print one number and a newline, nothing else", contents(bw));
+                                } else {
+                                    status = refuse_at(heap, io, "opt.objective-not-finite", "the objective is NaN or infinite at the point shown", "make the objective finite there, or bound the search with --lower and --upper", contents(bw));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if status == 0 {
+            borrow best as &br in {
+                print_result(heap, io, contents(br), fun, nfev, nit, code);
+            }
+            if code != 0 {
+                status = 1;
+            }
+        }
+        buffer.drop(heap, argv);
+    }
+    unbox_slice(heap, x0);
+    unbox_slice(heap, lower);
+    unbox_slice(heap, upper);
+    unbox_slice(heap, best);
+    return status;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec } = split(world);
+    release(ffi);
+    release(fs);
+    release(net);
+    release(signals);
+    var status = 0;
+    borrow args as &g in {
+        borrow exec as &x in {
+            borrow clock as &c in {
+                borrow mut heap as &!h in {
+                    borrow mut io as &!i in {
+                        if arg_count(g) >= 2 && bytes.equal(arg(g, 1), "minimize") {
+                            status = minimize_command(h, i, x, c, g);
+                        } else {
+                            status = refuse(h, i, "opt.usage", "the command is `opt minimize`", "see docs/design.md; the other methods are not built");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    release(args);
+    release(exec);
+    release(clock);
+    release(heap);
+    release(io);
+    return status;
+}

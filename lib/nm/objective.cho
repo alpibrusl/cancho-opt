@@ -1,0 +1,217 @@
+edition 7;
+
+module opt.objective;
+
+import std.buffer;
+import std.fmt;
+import std.io;
+import std.json;
+import std.process;
+
+// The objective: one of three built in, or a program that is started for each point (docs/design.md section 4).
+//
+// `value` answers (code, value): 0 and the number, or 1 (the program could not be started), 2 (it did not exit with status 0),
+// 3 (its output is not exactly one number), 4 (the number is not finite).
+
+pub fn kind_program() -> [] int {
+    return 0;
+}
+
+pub fn kind_sphere() -> [] int {
+    return 1;
+}
+
+pub fn kind_rosenbrock() -> [] int {
+    return 2;
+}
+
+pub fn kind_quadratic() -> [] int {
+    return 3;
+}
+
+pub fn kind_absolute() -> [] int {
+    return 4;
+}
+
+// The kind named `name`, or -1.
+pub fn kind_of[&s](name: &s [byte]) -> [] int {
+    if len(name) == 6 && name[0] == byte_of('s') && name[1] == byte_of('p') {
+        return 1;
+    }
+    if len(name) == 10 && name[0] == byte_of('r') {
+        return 2;
+    }
+    if len(name) == 9 && name[0] == byte_of('q') {
+        return 3;
+    }
+    if len(name) == 8 && name[0] == byte_of('a') {
+        return 4;
+    }
+    return 0 - 1;
+}
+
+fn status_of(ran: process.Ran) -> [] int {
+    match ran {
+        process.Ran::Code(n) => {
+            return n;
+        }
+        process.Ran::Signaled(s) => {
+            return 0 - 4;
+        }
+        process.Ran::TimedOut => {
+            return 255;
+        }
+        process.Ran::TooMuch => {
+            return 255;
+        }
+        process.Ran::Failed(e) => {
+            return 255;
+        }
+    }
+}
+
+// the first whitespace-separated token of `text` and whether more than one was there: the number it holds, by way of the JSON reader
+fn number_of[&s](text: &s [byte]) -> [] (int, float) {
+    var first = 0;
+    while first < len(text) && (int_of(text[first]) == ' ' || int_of(text[first]) == 10 || int_of(text[first]) == 13 || int_of(text[first]) == 9) {
+        first = first + 1;
+    }
+    var last = first;
+    while last < len(text) && int_of(text[last]) != ' ' && int_of(text[last]) != 10 && int_of(text[last]) != 13 && int_of(text[last]) != 9 {
+        last = last + 1;
+    }
+    var rest = last;
+    while rest < len(text) && (int_of(text[rest]) == ' ' || int_of(text[rest]) == 10 || int_of(text[rest]) == 13 || int_of(text[rest]) == 9) {
+        rest = rest + 1;
+    }
+    if last == first || rest < len(text) {
+        return (3, 0.0);
+    }
+    var code = 3;
+    var out = 0.0;
+    region r {
+        let src = alloc_slice[r](last - first + 2, byte_of(0));
+        src[0] = byte_of('[');
+        var k = first;
+        while k < last {
+            src[1 + k - first] = text[k];
+            k = k + 1;
+        }
+        src[last - first + 1] = byte_of(']');
+        let all = src[0..last - first + 2];
+        let tape = alloc_slice[r](json.tape_len(all), 0);
+        if json.parse(all, tape) > 0 && json.is_number(tape, 1) {
+            out = json.to_float(all, tape, 1);
+            code = 0;
+        }
+    }
+    if code == 0 && out - out != 0.0 {
+        return (4, 0.0);
+    }
+    return (code, out);
+}
+
+fn spawn_value[&h, &i, &x, &c, &p, &a, &v](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, exe: &p [byte], argv: &a [byte], point: &v [float]) -> [heap, exec(""), clock, poll] (int, float) {
+    var line = buffer.empty(heap, 64);
+    var k = 0;
+    while k < len(point) {
+        if k > 0 {
+            line = buffer.push(heap, line, byte_of(' '));
+        }
+        region r {
+            let scratch = alloc_slice[r](32, byte_of(0));
+            let n = fmt.float_into(scratch, point[k]);
+            if n > 0 {
+                line = buffer.append(heap, line, scratch[0..n]);
+            }
+        }
+        k = k + 1;
+    }
+    line = buffer.push(heap, line, byte_of(10));
+    var code = 1;
+    var out = 0.0;
+    match process.channels_with_errors() {
+        process.ChannelsWithErrors::Failed(e) => {
+            code = 1;
+        }
+        process.ChannelsWithErrors::Ok(to_child, child_in, from_child, child_out, from_errors, child_errors) => {
+            match exec_spawn(exec, exe, argv, "PATH=/usr/local/bin:/usr/bin:/bin\0HOME=/tmp\0", Stdio::Pipe(child_in), Stdio::Pipe(child_out), Stdio::Pipe(child_errors)) {
+                Spawned::Failed(e) => {
+                    process.close(to_child, from_child);
+                    pipe_close(from_errors);
+                    code = 1;
+                }
+                Spawned::Ok(child) => {
+                    var input = buffer.empty(heap, 0);
+                    borrow line as &lr in {
+                        input = buffer.append(heap, input, buffer.bytes(lr));
+                    }
+                    borrow input as &nr in {
+                        let (got, errors, ran) = process.capture_both(heap, clock, child, to_child, from_child, from_errors, buffer.bytes(nr), 65536, 65536, 3600000);
+                        if status_of(ran) != 0 {
+                            code = 2;
+                        } else {
+                            borrow got as &gr in {
+                                let (c2, v2) = number_of(buffer.bytes(gr));
+                                code = c2;
+                                out = v2;
+                            }
+                        }
+                        buffer.drop(heap, got);
+                        buffer.drop(heap, errors);
+                    }
+                    buffer.drop(heap, input);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, line);
+    return (code, out);
+}
+
+pub fn value[&h, &i, &x, &c, &p, &a, &v](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], point: &v [float]) -> [heap, exec(""), clock, poll] (int, float) {
+    if kind == 0 {
+        return spawn_value(heap, io, exec, clock, exe, argv, point);
+    }
+    var total = 0.0;
+    var k = 0;
+    if kind == 1 {
+        while k < len(point) {
+            total = total + point[k] * point[k];
+            k = k + 1;
+        }
+    } else if kind == 2 {
+        // 100 (x[i+1] - x[i]^2)^2 + (1 - x[i])^2, summed in order: scipy's `rosen`
+        while k + 1 < len(point) {
+            let t = point[k + 1] - point[k] * point[k];
+            let u = 1.0 - point[k];
+            let term = 100.0 * (t * t) + u * u;
+            if k == 0 {
+                total = term;
+            } else {
+                total = total + term;
+            }
+            k = k + 1;
+        }
+    } else if kind == 3 {
+        while k < len(point) {
+            let d = point[k] - float_of(k);
+            total = total + d * d;
+            k = k + 1;
+        }
+    } else {
+        // sum of (k + 1) |x_k - k|: a minimum with a corner, which makes the simplex shrink
+        while k < len(point) {
+            var d = point[k] - float_of(k);
+            if d < 0.0 {
+                d = 0.0 - d;
+            }
+            total = total + float_of(k + 1) * d;
+            k = k + 1;
+        }
+    }
+    if total - total != 0.0 {
+        return (4, 0.0);
+    }
+    return (0, total);
+}

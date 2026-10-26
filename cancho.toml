@@ -1,0 +1,9 @@
+[package]
+name = "opt"
+cancho = "dd0f38f2e48ff02112e57eee3719b9fe09c65d4a"   # the compiler these sources were written for
+
+[[bin]]
+name = "opt"
+sources = ["lib/nm", "tools/opt"]
+std = true
+out = "build/opt"

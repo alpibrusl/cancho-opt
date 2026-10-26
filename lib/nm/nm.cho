@@ -1,0 +1,328 @@
+edition 7;
+
+module opt.nm;
+
+import opt.objective;
+
+// Nelder-Mead as `scipy.optimize.minimize(method="Nelder-Mead")` does it (docs/design.md section 2): the same operations on the same doubles in the
+// same order. The work space is one vector of floats:
+//
+//   sim   (n + 1) rows of n   the simplex, kept sorted by value
+//   fs    n + 1               the values
+//   xbar, xr, xe  n each      the centroid of all vertices but the worst, and two trial points
+//   lo, hi        n each      the box every point is clipped to
+//   row, last     n each      a row, while two are swapped; the last point the objective was asked about
+
+// clip the row at `at` to the box
+fn clip[&w](ws: &!w [float], at: int, n: int, lo: int, hi: int) -> [] int {
+    var k = 0;
+    while k < n {
+        var v = ws[at + k];
+        if v < ws[lo + k] {
+            v = ws[lo + k];
+        }
+        if v > ws[hi + k] {
+            v = ws[hi + k];
+        }
+        ws[at + k] = v;
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn copy_row[&w](ws: &!w [float], from: int, to: int, n: int) -> [] int {
+    var k = 0;
+    while k < n {
+        ws[to + k] = ws[from + k];
+        k = k + 1;
+    }
+    return 0;
+}
+
+// a stable insertion sort of the n + 1 rows by value
+fn sort_rows[&w](ws: &!w [float], n: int, fs: int, row: int) -> [] int {
+    var j = 1;
+    while j <= n {
+        var k = j;
+        while k >= 1 && ws[fs + k - 1] > ws[fs + k] {
+            let f = ws[fs + k];
+            ws[fs + k] = ws[fs + k - 1];
+            ws[fs + k - 1] = f;
+            copy_row(ws, (k - 1) * n, row, n);
+            copy_row(ws, k * n, (k - 1) * n, n);
+            copy_row(ws, row, k * n, n);
+            k = k - 1;
+        }
+        j = j + 1;
+    }
+    return 0;
+}
+
+fn absolute(v: float) -> [] float {
+    if v < 0.0 {
+        return 0.0 - v;
+    }
+    return v;
+}
+
+// the code a stop is kept as: 90 (the budget would be exceeded: scipy abandons the iteration there) is status 1, any other code c is 10 + c
+fn stop_of(code: int) -> [] int {
+    if code == 90 {
+        return 1;
+    }
+    return 10 + code;
+}
+
+// the value at the row `at`, remembering the point in `last` so that a failure can name it (code 90 without evaluating when `spent` has reached `maxfev`)
+fn try_at[&h, &i, &x, &c, &p, &a, &w](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], ws: &!w [float], at: int, n: int, last: int, spent: int, maxfev: int) -> [heap, exec(""), clock, poll] (int, float) {
+    if spent >= maxfev {
+        return (90, 0.0);
+    }
+    copy_row(ws, at, last, n);
+    return objective.value(heap, io, exec, clock, kind, exe, argv, ws[at..at + n]);
+}
+
+// Minimise from `x0` inside [lower, upper]; the minimiser goes into `best`. A step of 0 is scipy's initial simplex, anything else puts vertex k at
+// x0 + step e_k. `nfev` never exceeds `maxfev`: the evaluation that would is not made and the iteration is abandoned where it stands, as scipy does. Answers (status, value, evaluations, iterations); status 0 converged, 1 `maxfev` reached, 2 `maxiter` reached, 10 + c when the
+// objective failed with code c (see `objective.value`), and `best` is then the point it failed at.
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], lower: &l [float], upper: &u [float], step: float, xatol: float, fatol: float, maxfev: int, maxiter: int, best: &!o [float]) -> [heap, exec(""), clock, poll] (int, float, int, int) {
+    let n = len(x0);
+    let m = n + 1;
+    let fs = m * n;
+    let xbar = fs + m;
+    let xr = xbar + n;
+    let xe = xr + n;
+    let lo = xe + n;
+    let hi = lo + n;
+    let row = hi + n;
+    let last = row + n;
+    let work = box_slice(heap, last + n, 0.0);
+    var status = 0;
+    var nfev = 0;
+    var nit = 1;
+    var fun = 0.0;
+    borrow mut work as &!ww in {
+        let w = contents(ww);
+        var k = 0;
+        while k < n {
+            w[lo + k] = lower[k];
+            w[hi + k] = upper[k];
+            w[k] = x0[k];
+            k = k + 1;
+        }
+        clip(w, 0, n, lo, hi);
+        k = 0;
+        while k < n {
+            var j = 0;
+            while j < n {
+                w[(k + 1) * n + j] = w[j];
+                j = j + 1;
+            }
+            let y = w[(k + 1) * n + k];
+            if step != 0.0 {
+                w[(k + 1) * n + k] = y + step;
+            } else if y != 0.0 {
+                w[(k + 1) * n + k] = (1.0 + 0.05) * y;
+            } else {
+                w[(k + 1) * n + k] = 0.00025;
+            }
+            k = k + 1;
+        }
+        // scipy: a vertex above its upper bound is reflected into the interior, then the whole simplex is clipped
+        k = 1;
+        while k < m {
+            var j = 0;
+            while j < n {
+                if w[k * n + j] > w[hi + j] {
+                    w[k * n + j] = 2.0 * w[hi + j] - w[k * n + j];
+                }
+                j = j + 1;
+            }
+            clip(w, k * n, n, lo, hi);
+            k = k + 1;
+        }
+        k = 0;
+        while k < m {
+            w[fs + k] = 1.0e300 * 1.0e300;
+            k = k + 1;
+        }
+        k = 0;
+        while k < m && status == 0 {
+            let (code, v) = try_at(heap, io, exec, clock, kind, exe, argv, w, k * n, n, last, nfev, maxfev);
+            if code != 90 {
+                nfev = nfev + 1;
+            }
+            if code != 0 {
+                status = stop_of(code);
+            } else {
+                w[fs + k] = v;
+            }
+            k = k + 1;
+        }
+        if status == 0 || status == 1 {
+            sort_rows(w, n, fs, row);
+        }
+        var done = false;
+        while !done && status == 0 {
+            if nfev >= maxfev {
+                status = 1;
+                done = true;
+            } else if nit >= maxiter {
+                status = 2;
+                done = true;
+            } else {
+                var far = 0.0;
+                var gap = 0.0;
+                var r = 1;
+                while r < m {
+                    var j = 0;
+                    while j < n {
+                        let d = absolute(w[r * n + j] - w[j]);
+                        if d > far {
+                            far = d;
+                        }
+                        j = j + 1;
+                    }
+                    let g = absolute(w[fs] - w[fs + r]);
+                    if g > gap {
+                        gap = g;
+                    }
+                    r = r + 1;
+                }
+                if far <= xatol && gap <= fatol {
+                    done = true;
+                } else {
+                    // the centroid of the n best vertices
+                    var j = 0;
+                    while j < n {
+                        var total = w[j];
+                        r = 1;
+                        while r < n {
+                            total = total + w[r * n + j];
+                            r = r + 1;
+                        }
+                        w[xbar + j] = total / float_of(n);
+                        j = j + 1;
+                    }
+                    let worst = n * n;
+                    j = 0;
+                    while j < n {
+                        w[xr + j] = (1.0 + 1.0) * w[xbar + j] - 1.0 * w[worst + j];
+                        j = j + 1;
+                    }
+                    clip(w, xr, n, lo, hi);
+                    let (c1, fxr) = try_at(heap, io, exec, clock, kind, exe, argv, w, xr, n, last, nfev, maxfev);
+                    if c1 != 90 {
+                        nfev = nfev + 1;
+                    }
+                    var shrink = false;
+                    if c1 != 0 {
+                        status = stop_of(c1);
+                    } else if fxr < w[fs] {
+                        j = 0;
+                        while j < n {
+                            w[xe + j] = (1.0 + 1.0 * 2.0) * w[xbar + j] - 1.0 * 2.0 * w[worst + j];
+                            j = j + 1;
+                        }
+                        clip(w, xe, n, lo, hi);
+                        let (c2, fxe) = try_at(heap, io, exec, clock, kind, exe, argv, w, xe, n, last, nfev, maxfev);
+                        if c2 != 90 {
+                            nfev = nfev + 1;
+                        }
+                        if c2 != 0 {
+                            status = stop_of(c2);
+                        } else if fxe < fxr {
+                            copy_row(w, xe, worst, n);
+                            w[fs + n] = fxe;
+                        } else {
+                            copy_row(w, xr, worst, n);
+                            w[fs + n] = fxr;
+                        }
+                    } else if fxr < w[fs + n - 1] {
+                        copy_row(w, xr, worst, n);
+                        w[fs + n] = fxr;
+                    } else if fxr < w[fs + n] {
+                        // outside contraction
+                        j = 0;
+                        while j < n {
+                            w[xe + j] = (1.0 + 0.5 * 1.0) * w[xbar + j] - 0.5 * 1.0 * w[worst + j];
+                            j = j + 1;
+                        }
+                        clip(w, xe, n, lo, hi);
+                        let (c3, fxc) = try_at(heap, io, exec, clock, kind, exe, argv, w, xe, n, last, nfev, maxfev);
+                        if c3 != 90 {
+                            nfev = nfev + 1;
+                        }
+                        if c3 != 0 {
+                            status = stop_of(c3);
+                        } else if fxc <= fxr {
+                            copy_row(w, xe, worst, n);
+                            w[fs + n] = fxc;
+                        } else {
+                            shrink = true;
+                        }
+                    } else {
+                        // inside contraction
+                        j = 0;
+                        while j < n {
+                            w[xe + j] = (1.0 - 0.5) * w[xbar + j] + 0.5 * w[worst + j];
+                            j = j + 1;
+                        }
+                        clip(w, xe, n, lo, hi);
+                        let (c4, fxcc) = try_at(heap, io, exec, clock, kind, exe, argv, w, xe, n, last, nfev, maxfev);
+                        if c4 != 90 {
+                            nfev = nfev + 1;
+                        }
+                        if c4 != 0 {
+                            status = stop_of(c4);
+                        } else if fxcc < w[fs + n] {
+                            copy_row(w, xe, worst, n);
+                            w[fs + n] = fxcc;
+                        } else {
+                            shrink = true;
+                        }
+                    }
+                    if shrink && status == 0 {
+                        r = 1;
+                        while r < m && status == 0 {
+                            j = 0;
+                            while j < n {
+                                w[r * n + j] = w[j] + 0.5 * (w[r * n + j] - w[j]);
+                                j = j + 1;
+                            }
+                            clip(w, r * n, n, lo, hi);
+                            let (c5, fv) = try_at(heap, io, exec, clock, kind, exe, argv, w, r * n, n, last, nfev, maxfev);
+                            if c5 != 90 {
+                                nfev = nfev + 1;
+                            }
+                            if c5 != 0 {
+                                status = stop_of(c5);
+                            } else {
+                                w[fs + r] = fv;
+                            }
+                            r = r + 1;
+                        }
+                    }
+                    if status == 0 {
+                        nit = nit + 1;
+                    }
+                    if status == 0 || status == 1 {
+                        sort_rows(w, n, fs, row);
+                    }
+                }
+            }
+        }
+        k = 0;
+        while k < n {
+            if status >= 10 {
+                best[k] = w[last + k];
+            } else {
+                best[k] = w[k];
+            }
+            k = k + 1;
+        }
+        fun = w[fs];
+    }
+    unbox_slice(heap, work);
+    return (status, fun, nfev, nit);
+}
