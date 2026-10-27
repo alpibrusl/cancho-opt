@@ -215,3 +215,160 @@ pub fn value[&h, &i, &x, &c, &p, &a, &v](heap: &!h Heap, io: &!i Io, exec: &x Ex
     }
     return (0, total);
 }
+
+// ---- value and gradient (BFGS, docs/design.md section 9) --------------------------------------------------------------------------------------------------------
+
+// does the objective have a gradient? Every kind but `absolute` does.
+pub fn has_gradient(kind: int) -> [] bool {
+    return kind != 4;
+}
+
+// the numbers of `text`, white space separated, into `out` (as many as it holds): how many there were, or -1 when something is not a number or there are more than `out` holds
+fn numbers_of[&s, &o](text: &s [byte], out: &!o [float]) -> [] int {
+    var count = 0;
+    var k = 0;
+    while k < len(text) {
+        while k < len(text) && (int_of(text[k]) == ' ' || int_of(text[k]) == 10 || int_of(text[k]) == 13 || int_of(text[k]) == 9) {
+            k = k + 1;
+        }
+        if k < len(text) {
+            let start = k;
+            while k < len(text) && int_of(text[k]) != ' ' && int_of(text[k]) != 10 && int_of(text[k]) != 13 && int_of(text[k]) != 9 {
+                k = k + 1;
+            }
+            let (code, v) = number_of(text[start..k]);
+            if code != 0 || count >= len(out) {
+                return 0 - 1;
+            }
+            out[count] = v;
+            count = count + 1;
+        }
+    }
+    return count;
+}
+
+fn spawn_value_gradient[&h, &i, &x, &c, &p, &a, &v, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, exe: &p [byte], argv: &a [byte], point: &v [float], grad: &!g [float]) -> [heap, exec(""), clock, poll] (int, float) {
+    var line = buffer.empty(heap, 64);
+    var k = 0;
+    while k < len(point) {
+        if k > 0 {
+            line = buffer.push(heap, line, byte_of(' '));
+        }
+        region r {
+            let scratch = alloc_slice[r](32, byte_of(0));
+            let n = fmt.float_into(scratch, point[k]);
+            if n > 0 {
+                line = buffer.append(heap, line, scratch[0..n]);
+            }
+        }
+        k = k + 1;
+    }
+    line = buffer.push(heap, line, byte_of(10));
+    var code = 1;
+    var out = 0.0;
+    match process.channels_with_errors() {
+        process.ChannelsWithErrors::Failed(e) => {
+            code = 1;
+        }
+        process.ChannelsWithErrors::Ok(to_child, child_in, from_child, child_out, from_errors, child_errors) => {
+            match exec_spawn(exec, exe, argv, "PATH=/usr/local/bin:/usr/bin:/bin\0HOME=/tmp\0", Stdio::Pipe(child_in), Stdio::Pipe(child_out), Stdio::Pipe(child_errors)) {
+                Spawned::Failed(e) => {
+                    process.close(to_child, from_child);
+                    pipe_close(from_errors);
+                    code = 1;
+                }
+                Spawned::Ok(child) => {
+                    var input = buffer.empty(heap, 0);
+                    borrow line as &lr in {
+                        input = buffer.append(heap, input, buffer.bytes(lr));
+                    }
+                    borrow input as &nr in {
+                        let (got, errors, ran) = process.capture_both(heap, clock, child, to_child, from_child, from_errors, buffer.bytes(nr), 65536, 65536, 3600000);
+                        if status_of(ran) != 0 {
+                            code = 2;
+                        } else {
+                            borrow got as &gr in {
+                                // the value, then the gradient: n + 1 numbers
+                                region r2 {
+                                    let nums = alloc_slice[r2](len(point) + 1, 0.0);
+                                    let count = numbers_of(buffer.bytes(gr), nums);
+                                    if count != len(point) + 1 {
+                                        code = 3;
+                                    } else {
+                                        out = nums[0];
+                                        var all = true;
+                                        var j = 0;
+                                        while j <= len(point) {
+                                            if nums[j] - nums[j] != 0.0 {
+                                                all = false;
+                                            }
+                                            j = j + 1;
+                                        }
+                                        if !all {
+                                            code = 4;
+                                        } else {
+                                            code = 0;
+                                            j = 0;
+                                            while j < len(point) {
+                                                grad[j] = nums[1 + j];
+                                                j = j + 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        buffer.drop(heap, got);
+                        buffer.drop(heap, errors);
+                    }
+                    buffer.drop(heap, input);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, line);
+    return (code, out);
+}
+
+// The value and the gradient at `point`: (code, value), the gradient in `grad`. Codes as for `value`, and 5 for an objective without a gradient.
+pub fn value_gradient[&h, &i, &x, &c, &p, &a, &v, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], point: &v [float], grad: &!g [float]) -> [heap, exec(""), clock, poll] (int, float) {
+    if kind == 0 {
+        return spawn_value_gradient(heap, io, exec, clock, exe, argv, point, grad);
+    }
+    if kind == 4 {
+        return (5, 0.0);
+    }
+    let (code, f) = value(heap, io, exec, clock, kind, exe, argv, point);
+    if code != 0 {
+        return (code, f);
+    }
+    let n = len(point);
+    var k = 0;
+    if kind == 1 {
+        while k < n {
+            grad[k] = 2.0 * point[k];
+            k = k + 1;
+        }
+    } else if kind == 3 {
+        while k < n {
+            grad[k] = 2.0 * (point[k] - float_of(k));
+            k = k + 1;
+        }
+    } else {
+        // scipy's `rosen_der`: the first, the last and the interior components with its formulas, in its order of operations
+        if n < 2 {
+            return (5, 0.0);
+        }
+        grad[0] = (0.0 - 400.0) * point[0] * (point[1] - point[0] * point[0]) - 2.0 * (1.0 - point[0]);
+        grad[n - 1] = 200.0 * (point[n - 1] - point[n - 2] * point[n - 2]);
+        k = 1;
+        while k + 1 < n {
+            let xm = point[k];
+            let xm_m1 = point[k - 1];
+            let xm_p1 = point[k + 1];
+            grad[k] = 200.0 * (xm - xm_m1 * xm_m1) - 400.0 * (xm_p1 - xm * xm) * xm - 2.0 * (1.0 - xm);
+            k = k + 1;
+        }
+    }
+    return (0, f);
+}

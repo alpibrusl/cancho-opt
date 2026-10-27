@@ -5,7 +5,8 @@ measures it) or marked as a choice or open.
 
 - **Agent-first, like cancho-ml and cancho-stats.** JSON on standard output; an error is data with a stable `opt.<name>` rule tag, exit status 2 and a repair.
   No payload is ever logged.
-- **scipy is the oracle**, and the claim is bit for bit. `scripts/check_scipy.py` must pass, and every mutant it lists must be killed (`--mutants`).
+- **scipy is the oracle**, and the claim is bit for bit: Nelder-Mead against scipy as it is (`scripts/check_scipy.py`), BFGS against scipy with its BLAS dot products replaced by sequential sums (`scripts/check_bfgs.py`;
+  against real BLAS only the last bits can agree, `docs/design.md` section 9). Both checks must pass, and every mutant they list must be killed (`--mutants`), or be explained where it is left out.
 - **No source file over 2,000 lines. Every refusal has a rule tag. No input reaches a panic** (`scripts/check_cli.py`).
 - **Gates are written before the code they judge and must be able to fail.**
 - **Measured claims only.** A claim found false is corrected in place, in the document that made it.
