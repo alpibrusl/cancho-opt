@@ -109,15 +109,15 @@ pub fn dcstep(stx0: float, fx0: float, dx0: float, sty0: float, fy0: float, dy0:
     if fp > fx {
         let theta = 3.0 * (fx - fp) / (stp - stx) + dx + dp;
         let s = max3(theta, dx, dp);
-        var gamma = s * sqrt((theta / s) * (theta / s) - (dx / s) * (dp / s));
+        var gamma = s * sqrt(theta / s * (theta / s) - dx / s * (dp / s));
         if stp < stx {
             gamma = gamma * (0.0 - 1.0);
         }
-        let p = (gamma - dx) + theta;
-        let q = ((gamma - dx) + gamma) + dp;
+        let p = gamma - dx + theta;
+        let q = gamma - dx + gamma + dp;
         let r = p / q;
         let stpc = stx + r * (stp - stx);
-        let stpq = stx + ((dx / ((fx - fp) / (stp - stx) + dx)) / 2.0) * (stp - stx);
+        let stpq = stx + dx / ((fx - fp) / (stp - stx) + dx) / 2.0 * (stp - stx);
         if absolute(stpc - stx) <= absolute(stpq - stx) {
             stpf = stpc;
         } else {
@@ -127,15 +127,15 @@ pub fn dcstep(stx0: float, fx0: float, dx0: float, sty0: float, fy0: float, dy0:
     } else if sgnd < 0.0 {
         let theta = 3.0 * (fx - fp) / (stp - stx) + dx + dp;
         let s = max3(theta, dx, dp);
-        var gamma = s * sqrt((theta / s) * (theta / s) - (dx / s) * (dp / s));
+        var gamma = s * sqrt(theta / s * (theta / s) - dx / s * (dp / s));
         if stp > stx {
             gamma = gamma * (0.0 - 1.0);
         }
-        let p = (gamma - dp) + theta;
-        let q = ((gamma - dp) + gamma) + dx;
+        let p = gamma - dp + theta;
+        let q = gamma - dp + gamma + dx;
         let r = p / q;
         let stpc = stp + r * (stx - stp);
-        let stpq = stp + (dp / (dp - dx)) * (stx - stp);
+        let stpq = stp + dp / (dp - dx) * (stx - stp);
         if absolute(stpc - stp) > absolute(stpq - stp) {
             stpf = stpc;
         } else {
@@ -146,7 +146,7 @@ pub fn dcstep(stx0: float, fx0: float, dx0: float, sty0: float, fy0: float, dy0:
         let theta = 3.0 * (fx - fp) / (stp - stx) + dx + dp;
         let s = max3(theta, dx, dp);
         // `max(0, ...)` of Python: 0 unless the radicand is positive (NaN gives 0)
-        var rad = (theta / s) * (theta / s) - (dx / s) * (dp / s);
+        var rad = theta / s * (theta / s) - dx / s * (dp / s);
         if !(rad > 0.0) {
             rad = 0.0;
         }
@@ -154,8 +154,8 @@ pub fn dcstep(stx0: float, fx0: float, dx0: float, sty0: float, fy0: float, dy0:
         if stp > stx {
             gamma = 0.0 - gamma;
         }
-        let p = (gamma - dp) + theta;
-        let q = (gamma + (dx - dp)) + gamma;
+        let p = gamma - dp + theta;
+        let q = gamma + (dx - dp) + gamma;
         let r = p / q;
         var stpc = stpmin;
         if r < 0.0 && gamma != 0.0 {
@@ -163,7 +163,7 @@ pub fn dcstep(stx0: float, fx0: float, dx0: float, sty0: float, fy0: float, dy0:
         } else if stp > stx {
             stpc = stpmax;
         }
-        let stpq = stp + (dp / (dp - dx)) * (stx - stp);
+        let stpq = stp + dp / (dp - dx) * (stx - stp);
         if brackt != 0 {
             if absolute(stpc - stp) < absolute(stpq - stp) {
                 stpf = stpc;
@@ -183,23 +183,21 @@ pub fn dcstep(stx0: float, fx0: float, dx0: float, sty0: float, fy0: float, dy0:
             }
             stpf = clip(stpf, stpmin, stpmax);
         }
-    } else {
-        if brackt != 0 {
-            let theta = 3.0 * (fp - fy) / (sty - stp) + dy + dp;
-            let s = max3(theta, dy, dp);
-            var gamma = s * sqrt((theta / s) * (theta / s) - (dy / s) * (dp / s));
-            if stp > sty {
-                gamma = 0.0 - gamma;
-            }
-            let p = (gamma - dp) + theta;
-            let q = ((gamma - dp) + gamma) + dy;
-            let r = p / q;
-            stpf = stp + r * (sty - stp);
-        } else if stp > stx {
-            stpf = stpmax;
-        } else {
-            stpf = stpmin;
+    } else if brackt != 0 {
+        let theta = 3.0 * (fp - fy) / (sty - stp) + dy + dp;
+        let s = max3(theta, dy, dp);
+        var gamma = s * sqrt(theta / s * (theta / s) - dy / s * (dp / s));
+        if stp > sty {
+            gamma = 0.0 - gamma;
         }
+        let p = gamma - dp + theta;
+        let q = gamma - dp + gamma + dy;
+        let r = p / q;
+        stpf = stp + r * (sty - stp);
+    } else if stp > stx {
+        stpf = stpmax;
+    } else {
+        stpf = stpmin;
     }
     if fp > fx {
         sty = stp;
