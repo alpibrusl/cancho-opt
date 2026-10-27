@@ -13,6 +13,7 @@ Every claim below is **measured** (with the command that measures it), a **choic
 |---|---|
 | `opt minimize --method nelder-mead` | built (this document) |
 | `opt minimize --method bfgs` | built (section 9) |
+| `opt minimize --method spsa` | built (section 11) |
 | `opt minimize --method lm` (Levenberg-Marquardt, least squares) | **open**: needs an objective that returns residuals, a different protocol (section 4) |
 | `opt root`, `opt curve-fit`, gradient methods (BFGS, L-BFGS-B) | **open**, not needed by anything yet; they are written when a program needs them |
 
@@ -167,6 +168,26 @@ objective that costs scipy about 20 microseconds a call and `opt` well under one
 **What it does not show.** These are built-in objectives, which run inside `opt`. A real objective is a program that `opt` starts for every evaluation (section 4), at the 1.2 ms of a process start (the VQE BFGS run of cancho-quantum:
 56 gradients in 0.1 s), while scipy calls a Python function in tens of microseconds. For a cheap objective scipy in-process is far faster; for one that costs milliseconds (a `qsim` run) the start no longer matters. One machine, one
 build, one starting point per size; the timings move with the machine and are not a gate (`scripts/bench_scipy.py` prints them, it does not assert them).
+
+## 11. SPSA (`--method spsa`)
+
+Simultaneous-perturbation stochastic approximation (Spall 1992), for objectives that are *noisy* and have no gradient: the sampled VQE of cancho-quantum, where BFGS stops on "precision loss" and Nelder-Mead on its limit
+(`examples/vqe/README.md`). Each iteration draws a random direction Δ with entries ±1, evaluates the objective at x + c_k Δ and x − c_k Δ (**two evaluations whatever the number of parameters**: a finite difference
+along Δ) and moves x by `a_k` times the gradient estimate `(f₊ − f₋) / (2 c_k) · Δ`. The gains fall as `a_k = a / (k + A)^0.602` and `c_k = c / k^0.101` (k = 1, 2, …), Spall's recommended exponents; `A` (`--stability`,
+default `0.1 · maxiter`) keeps the early steps from being too long.
+
+**The method.** `--method spsa --x0 LIST (--objective … | -- PROGRAM…) [--maxiter N] [--a A] [--c C] [--stability S] [--seed K]`. Defaults: 100 iterations, `a` 0.2, `c` 0.1, seed 1: they suit variables and gradients of order one, and
+`a` and `c` are the two numbers a problem has to be tuned for (`c` should be at least the noise's scale). The objective is the value-only one of Nelder-Mead (section 4). One more evaluation at the end gives `fun`; `nfev` is
+`2 · nit + 1`. **There is no convergence test**: SPSA ends after its iterations, so the result has `"completed": true`, not `"converged"`, and the exit status is 0. Flags of the other methods are refused
+(`opt.flag-not-for-method`), as is `--seed 0` (the generator's one fixed point).
+
+**The random numbers** are `opt`'s own: xorshift64* (the generator of cancho-quantum's `qc.measure`), seeded by `--seed`; entry i of Δ is +1 when the i-th draw of the iteration is at least 0.5 and -1 otherwise. The same objective and
+seed give the same iterates on every platform.
+
+**What is claimed, and how it is measured (`scripts/check_spsa.py`).** scipy has no SPSA, so the oracle is `qiskit_algorithms.optimizers.SPSA` (0.4.0), an independent implementation of the same algorithm, run with the same gain
+sequences and with its source of perturbations replaced by this generator's stream. The iterates agree to a tolerance (not bit for bit: the gains use `pow`, which `std.math` and the C library may round differently in the last place) on
+deterministic objectives; on noisy ones the gradient estimate is checked to be unbiased over many seeds. Its mutants are listed in the script. **Not claimed:** that SPSA converges well on any problem (that is the experiment of cancho-quantum's
+README), the choice of the defaults beyond "order one", blocking, second-order SPSA, resampling, averaging of the last iterates, calibration of `a` and `c` (Qiskit has them; here they are flags).
 
 ## 7. Open
 

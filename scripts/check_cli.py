@@ -65,6 +65,36 @@ expect_refusal("opt.bad-number", "minimize", "--method", "bfgs", *X0, "--objecti
 expect_refusal("opt.unknown-method", "minimize", "--method", "lm", *X0, "--objective", "sphere")
 expect_refusal("opt.no-gradient", "minimize", "--method", "bfgs", "--x0", "1", "--objective", "rosenbrock")
 
+# SPSA
+S = "minimize", "--method", "spsa", *X0, "--objective", "sphere"
+expect_refusal("opt.flag-not-for-method", *S, "--xatol", "1e-6")
+expect_refusal("opt.flag-not-for-method", *S, "--maxfev", "50")
+expect_refusal("opt.flag-not-for-method", *S, "--gtol", "1e-6")
+expect_refusal("opt.flag-not-for-method", *S, "--lower", "0,0")
+expect_refusal("opt.flag-not-for-method", "minimize", *X0, "--objective", "sphere", "--seed", "3")
+expect_refusal("opt.flag-not-for-method", "minimize", "--method", "bfgs", *X0, "--objective", "sphere", "--a", "1")
+expect_refusal("opt.bad-number", *S, "--seed", "0")
+expect_refusal("opt.bad-number", *S, "--seed", "1.5")
+expect_refusal("opt.bad-number", *S, "--a", "0")
+expect_refusal("opt.bad-number", *S, "--c", "-1")
+expect_refusal("opt.bad-number", *S, "--stability", "x")
+expect_refusal("opt.bad-number", *S, "--maxiter", "0")
+r = opt(*S, "--maxiter", "7")
+j = json.loads(r.stdout) if r.returncode == 0 else {}
+if j.get("completed") is True and "converged" not in j and j.get("nit") == 7 and j.get("nfev") == 15 and j.get("method") == "spsa":
+    print("ok   SPSA: status 0, completed true, nit 7, nfev 2 nit + 1")
+else:
+    print("FAIL SPSA result:", r.returncode, r.stdout[:200])
+    bad += 1
+a = opt(*S, "--seed", "5")
+b = opt(*S, "--seed", "5")
+c = opt(*S, "--seed", "6")
+if a.returncode == 0 and a.stdout == b.stdout and a.stdout != c.stdout:
+    print("ok   SPSA: the same seed gives the same result, another seed another")
+else:
+    print("FAIL SPSA seeds")
+    bad += 1
+
 # a program objective computes the built-in function
 tmp = tempfile.mkdtemp()
 prog = os.path.join(tmp, "obj.py")
@@ -117,6 +147,12 @@ for what, (code, tag) in fails.items():
         print(f"FAIL {what}: the error does not name the first point: {err.get('point')}")
         bad += 1
 err = expect_refusal("opt.objective-failed", "minimize", "--x0", "1", "--", "/nonexistent/program")
+p = os.path.join(tmp, "f.py")
+open(p, "w").write("import sys\nx=float(sys.stdin.read())\nprint('1e999' if x > 1.0 else x)\n")
+err = expect_refusal("opt.objective-not-finite", "minimize", "--method", "spsa", "--x0", "1", "--c", "0.5", "--", sys.executable, p)
+if len(err.get("point", [])) != 1:
+    print("FAIL SPSA failure does not name its point")
+    bad += 1
 
 # a limit reached is status 1 and still prints
 r = opt("minimize", "--x0", "-1.2,1", "--objective", "rosenbrock", "--maxfev", "20")
