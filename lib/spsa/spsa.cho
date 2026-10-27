@@ -1,0 +1,118 @@
+edition 7;
+
+module opt.spsa;
+
+import opt.objective;
+import std.math;
+
+// SPSA (docs/design.md section 11): per iteration one random direction of +-1 entries, two evaluations of the objective, one step. The work space is one vector of floats:
+//
+//   x      n   the current point
+//   delta  n   this iteration's direction
+//   trial  n   the point asked about (x + c_k delta, then x - c_k delta); the last one the objective was asked about
+
+// the next draw in [0, 1) of xorshift64*, the generator of cancho-quantum's `qc.measure` (state in `rng[0]`)
+fn draw[&r](rng: &!r [int]) -> [] float {
+    var s = rng[0];
+    s = s ^ s >> 12 & 0xfffffffffffff;
+    s = s ^ s << 25;
+    s = s ^ s >> 27 & 0x1fffffffff;
+    rng[0] = s;
+    let y = wrapping_mul(s, 2685821657736338717);
+    return float_of(y >> 11 & 0x1fffffffffffff) / 9007199254740992.0;
+}
+
+// Run `maxiter` iterations from `x0` with gains a, c and stability constant `big_a`; the final point goes into `best`. Answers (status, value there, evaluations, iterations):
+// status 0 when it ran its iterations, 10 + c when the objective failed with code c (see `objective.value`), and `best` is then the point it failed at.
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], maxiter: int, gain: float, pert: float, big_a: float, seed: int, best: &!o [float]) -> [heap, exec(""), clock, poll] (int, float, int, int) {
+    let n = len(x0);
+    let delta = n;
+    let trial = delta + n;
+    let work = box_slice(heap, trial + n, 0.0);
+    let rng = box_slice(heap, 1, seed);
+    var status = 0;
+    var nfev = 0;
+    var nit = 0;
+    var fun = 0.0;
+    borrow mut rng as &!rr in {
+        borrow mut work as &!ww in {
+            let w = contents(ww);
+            let g = contents(rr);
+            var k = 0;
+            while k < n {
+                w[k] = x0[k];
+                k = k + 1;
+            }
+            var it = 1;
+            while it <= maxiter && status == 0 {
+                let ak = gain / math.pow(float_of(it) + big_a, 0.602);
+                let ck = pert / math.pow(float_of(it), 0.101);
+                k = 0;
+                while k < n {
+                    if draw(g) >= 0.5 {
+                        w[delta + k] = 1.0;
+                    } else {
+                        w[delta + k] = 0.0 - 1.0;
+                    }
+                    k = k + 1;
+                }
+                k = 0;
+                while k < n {
+                    w[trial + k] = w[k] + ck * w[delta + k];
+                    k = k + 1;
+                }
+                let (c1, fplus) = objective.value(heap, io, exec, clock, kind, exe, argv, w[trial..trial + n]);
+                nfev = nfev + 1;
+                if c1 != 0 {
+                    status = 10 + c1;
+                } else {
+                    k = 0;
+                    while k < n {
+                        w[trial + k] = w[k] - ck * w[delta + k];
+                        k = k + 1;
+                    }
+                    let (c2, fminus) = objective.value(heap, io, exec, clock, kind, exe, argv, w[trial..trial + n]);
+                    nfev = nfev + 1;
+                    if c2 != 0 {
+                        status = 10 + c2;
+                    } else {
+                        k = 0;
+                        while k < n {
+                            let estimate = (fplus - fminus) / (2.0 * ck) * w[delta + k];
+                            w[k] = w[k] - ak * estimate;
+                            k = k + 1;
+                        }
+                        nit = it;
+                    }
+                }
+                it = it + 1;
+            }
+            if status == 0 {
+                let (c3, f) = objective.value(heap, io, exec, clock, kind, exe, argv, w[0..n]);
+                nfev = nfev + 1;
+                if c3 != 0 {
+                    status = 10 + c3;
+                    k = 0;
+                    while k < n {
+                        w[trial + k] = w[k];
+                        k = k + 1;
+                    }
+                } else {
+                    fun = f;
+                }
+            }
+            k = 0;
+            while k < n {
+                if status >= 10 {
+                    best[k] = w[trial + k];
+                } else {
+                    best[k] = w[k];
+                }
+                k = k + 1;
+            }
+        }
+    }
+    unbox_slice(heap, work);
+    unbox_slice(heap, rng);
+    return (status, fun, nfev, nit);
+}

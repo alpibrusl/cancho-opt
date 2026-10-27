@@ -4,6 +4,6 @@ cancho = "076809419ebf13ad7a506e5a60008baa8e92bd1d"   # the first compiler with 
 
 [[bin]]
 name = "opt"
-sources = ["lib/nm", "lib/bfgs", "tools/opt"]
+sources = ["lib/nm", "lib/bfgs", "lib/spsa", "tools/opt"]
 std = true
 out = "build/opt"
