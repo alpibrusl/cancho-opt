@@ -28,6 +28,7 @@ cancho build --bin opt            # or: cancho build lib/nm/objective.cho lib/nm
 OPT=build/opt python3 scripts/check_scipy.py [--mutants]    # needs scipy; --mutants needs CANCHO=the compiler
 OPT=build/opt python3 scripts/check_bfgs.py [--mutants] [--wide] [--blas]
 OPT=build/opt python3 scripts/check_cli.py
+OPT=build/opt python3 scripts/bench_scipy.py [--markdown]     # time against scipy: docs/design.md section 10
 ```
 
 Authority: the binary starts the objective program (`exec`, and a clock for its timeout) and reads and writes standard input and
