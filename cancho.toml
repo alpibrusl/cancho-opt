@@ -1,9 +1,9 @@
 [package]
 name = "opt"
-cancho = "dd0f38f2e48ff02112e57eee3719b9fe09c65d4a"   # the compiler these sources were written for
+cancho = "076809419ebf13ad7a506e5a60008baa8e92bd1d"   # the first compiler with std.linalg (cancho#627), which `--method bfgs` uses: built and tested here with a binary of that branch before it merged
 
 [[bin]]
 name = "opt"
-sources = ["lib/nm", "tools/opt"]
+sources = ["lib/nm", "lib/bfgs", "tools/opt"]
 std = true
 out = "build/opt"

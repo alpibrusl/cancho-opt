@@ -43,7 +43,7 @@ expect_refusal("opt.usage", "minimize", *X0, "--objective", "nosuch")
 expect_refusal("opt.usage", "minimize", *X0, "--objective", "sphere", "--", "true")
 expect_refusal("opt.usage", "minimize", "--x0")
 expect_refusal("opt.unknown-flag", "minimize", *X0, "--objective", "sphere", "--tolerance", "1")
-expect_refusal("opt.unknown-method", "minimize", *X0, "--objective", "sphere", "--method", "bfgs")
+expect_refusal("opt.unknown-method", "minimize", *X0, "--objective", "sphere", "--method", "cg")
 expect_refusal("opt.bad-number", "minimize", "--x0", "1,x", "--objective", "sphere")
 expect_refusal("opt.bad-number", "minimize", "--x0", "1,", "--objective", "sphere")
 expect_refusal("opt.bad-number", "minimize", "--x0", "1,1e999", "--objective", "sphere")
@@ -55,6 +55,16 @@ expect_refusal("opt.bounds-length", *("minimize", *X0, "--objective", "sphere", 
 expect_refusal("opt.bounds-order", *("minimize", *X0, "--objective", "sphere", "--lower", "3,0", "--upper", "1,1"))
 expect_refusal("opt.too-many-parameters", "minimize", "--x0", ",".join(["1"] * 33), "--objective", "sphere")
 
+# BFGS
+expect_refusal("opt.no-gradient", "minimize", "--method", "bfgs", *X0, "--objective", "absolute")
+expect_refusal("opt.flag-not-for-method", "minimize", "--method", "bfgs", *X0, "--objective", "sphere", "--xatol", "1e-6")
+expect_refusal("opt.flag-not-for-method", "minimize", "--method", "bfgs", *X0, "--objective", "sphere", "--lower", "0,0")
+expect_refusal("opt.flag-not-for-method", "minimize", *X0, "--objective", "sphere", "--gtol", "1e-6")
+expect_refusal("opt.bad-number", "minimize", "--method", "bfgs", *X0, "--objective", "sphere", "--gtol", "-1")
+expect_refusal("opt.bad-number", "minimize", "--method", "bfgs", *X0, "--objective", "sphere", "--gtol", "x")
+expect_refusal("opt.unknown-method", "minimize", "--method", "lm", *X0, "--objective", "sphere")
+expect_refusal("opt.no-gradient", "minimize", "--method", "bfgs", "--x0", "1", "--objective", "rosenbrock")
+
 # a program objective computes the built-in function
 tmp = tempfile.mkdtemp()
 prog = os.path.join(tmp, "obj.py")
@@ -65,6 +75,29 @@ if a.returncode == 0 and b.returncode == 0 and json.loads(a.stdout) == json.load
     print("ok   a program that computes the sum of squares gives the same answer as the built-in objective (bit for bit, x, fun, nfev, nit)")
 else:
     print("FAIL program objective differs:", a.stdout[:150], b.stdout[:150], b.stderr[:150])
+    bad += 1
+
+# BFGS with a program that prints the value and then the gradient
+gprog = os.path.join(tmp, "grad.py")
+open(gprog, "w").write("import sys\nx=[float(v) for v in sys.stdin.read().split()]\nt=0.0\nfor v in x:\n    t=t+v*v\nprint(repr(t), *[repr(2.0*v) for v in x])\n")
+a = opt("minimize", "--method", "bfgs", "--x0", "1,2,3", "--objective", "sphere")
+b = opt("minimize", "--method", "bfgs", "--x0", "1,2,3", "--", sys.executable, gprog)
+if a.returncode == 0 and b.returncode == 0 and json.loads(a.stdout) == json.loads(b.stdout):
+    print("ok   a program that prints the value and the gradient of the sum of squares gives the same BFGS answer as the built-in objective (bit for bit)")
+else:
+    print("FAIL BFGS program objective differs:", a.stdout[:150], b.stdout[:150], b.stderr[:150])
+    bad += 1
+p1 = os.path.join(tmp, "g1.py")
+open(p1, "w").write("print('1.0')\n")
+expect_refusal("opt.objective-output", "minimize", "--method", "bfgs", "--x0", "1,2", "--", sys.executable, p1)
+p2 = os.path.join(tmp, "g2.py")
+open(p2, "w").write("print('1.0 nan 2.0')\n")
+expect_refusal("opt.objective-output", "minimize", "--method", "bfgs", "--x0", "1,2", "--", sys.executable, p2)
+r = opt("minimize", "--method", "bfgs", "--x0", "-1.2,1", "--objective", "rosenbrock", "--maxiter", "5")
+if r.returncode == 1 and json.loads(r.stdout)["converged"] is False and json.loads(r.stdout)["nit"] == 5:
+    print("ok   BFGS with a limit reached: status 1, the result printed, converged false, nit exactly the limit")
+else:
+    print("FAIL BFGS maxiter:", r.returncode, r.stdout[:200])
     bad += 1
 
 # failures of the program, with the point

@@ -12,6 +12,7 @@ Every claim below is **measured** (with the command that measures it), a **choic
 | Verb | Status |
 |---|---|
 | `opt minimize --method nelder-mead` | built (this document) |
+| `opt minimize --method bfgs` | built (section 9) |
 | `opt minimize --method lm` (Levenberg-Marquardt, least squares) | **open**: needs an objective that returns residuals, a different protocol (section 4) |
 | `opt root`, `opt curve-fit`, gradient methods (BFGS, L-BFGS-B) | **open**, not needed by anything yet; they are written when a program needs them |
 
@@ -79,6 +80,7 @@ evaluations.
 2. **`scripts/check_cli.py`**: every refusal has its rule tag and exit status 2 and prints nothing on standard output; a program objective
    gives the same answer as the built-in one it computes; a failing objective is reported with its point.
 3. In cancho-quantum: `scripts/check_hw.py` compares `hw fit` with `scripts/hw_fit.py` (the second half of this work).
+4. **`scripts/check_bfgs.py`** (section 9): BFGS against scipy with sequential dot products, bit for bit, and its mutants.
 
 ## 8. The rule tags
 
@@ -97,6 +99,46 @@ evaluations.
 
 Each is one JSON object on standard error, `{"error": "<tag>", "message": ..., "repair": ...}`, with the point added for the last three, exit
 status 2, nothing on standard output. `scripts/check_cli.py` has a case for every tag.
+
+## 9. BFGS (`--method bfgs`)
+
+`scipy.optimize.minimize(method="BFGS")` with a gradient, ported from the scipy 1.18 source: the BFGS update of the inverse Hessian (`_minimize_bfgs`), the MINPACK line search `dcsrch` that scipy tries first
+(`line_search_wolfe1`), and the second line search it falls back to (`line_search_wolfe2`, with `zoom`, `cubicmin` and `quadmin`), and `ScalarFunction`'s bookkeeping of which evaluations are counted.
+
+**The objective.** A built-in objective gives its gradient (`sphere`, `rosenbrock`, `quadratic`; `absolute` has none and is refused). A program prints *one line*: the value, then the gradient, `n + 1` numbers separated by
+white space. It is started once for each distinct point. `nfev` and `njev` are counted as scipy counts them (a value asked for at a point it already evaluated is not counted again, a gradient the same), not as the number of times the
+program ran, so that the counts compare with scipy's. Exit status 0 when `gtol` was reached, 1 when `--maxiter` was, or the line search could not go on (scipy's "precision loss"), 2 on a refusal.
+
+**What is claimed, and what is not.** scipy does its matrix products and dot products in BLAS, whose order of summation and use of fused multiply-add we cannot know and do not copy; `opt` sums sequentially (with `std.linalg`).
+So against scipy *as it is* the answers agree only to the last bits. The claim a gate can hold is against **scipy with exactly those products replaced by sequential sums** (`np.dot` and the 2-norm, patched for the duration of the check, nothing else of
+scipy touched): there `opt` agrees **bit for bit**, with the same minimiser, value, gradient, iterations, evaluation counts and status (section 9.2). That is a claim about the port of the algorithm; the difference from
+real scipy is a property of BLAS, measured in section 9.2 and not hidden.
+
+Choices that differ from scipy: only an analytic gradient (`jac=None`, which makes scipy difference the function, is refused: `opt.no-gradient`); no bounds, no `xrtol`, `c1` and `c2` fixed at scipy's defaults (1e-4, 0.9), `gtol` (default 1e-5, `--gtol`) is on the largest component of the gradient
+(scipy's default norm); at most 32 parameters.
+
+### 9.1 Why a gradient method at all
+
+The VQE example of cancho-quantum (`examples/vqe`) found that a single Nelder-Mead run in 12 dimensions stops on a point that is not a minimum and reports `converged`, and needed 77,592 evaluations for 16 angles. For a rotation
+gate the gradient of the energy is exact from two more evaluations per angle (the parameter-shift rule), which is what a program can give this method.
+
+### 9.2 Measured
+
+`OPT=build/opt python3 scripts/check_bfgs.py --wide --blas`:
+
+* **65 runs** (15 chosen, 40 seeded random, 10 chosen because scipy calls its second line search there) of `sphere`, `rosenbrock` and `quadratic` in 1 to 8 parameters, `gtol` from 1e-5 to 1e-14, with `--maxiter` limits: bit for bit against the oracle.
+* **500 seeded random Rosenbrock problems** (2 to 8 parameters, starts in [-6, 6]): bit for bit, 0 differ. 62 of them make scipy fall back to `line_search_wolfe2`, so the second line search is exercised and agrees; in those it accepted a step
+  19 times in 1,500 problems, **every time through `_zoom`**, so the branch of `scalar_search_wolfe2` that accepts a step without a zoom is ported as scipy has it but **not exercised by any case** (open).
+* **Against scipy as it is (BLAS):** over 120 seeded random Rosenbrock problems 102 have the same counts, all 120 reach the same minimum, and the iteration counts differ by at most 2. The 15% that differ are marginal step-size decisions that the
+  last bit of a dot product flips; this is *not* a defect of the port, which is what the sequential oracle shows.
+* **Mutants:** 13 deliberate bugs (the two line-search constants swapped, the sign of the update, the `rho s s^T` term, the initial step guess, the iteration-limit status, an uncounted gradient, the curvature test of `zoom`, the sign in `quadmin`,
+  the radicand of `cubicmin`, the average in `dcstep`, the bisection and the initial bound of `dcsrch`, the gradients of `quadratic` and `rosenbrock`) are all killed. Two are **not listed**, with the reason in the script: removing
+  the `alpha1 < 0` guard of `wolfe1` (unreachable: it needs the value to have risen on the last step) and relaxing the curvature test in the main loop of `wolfe2` (the unexercised branch above).
+* **`scripts/check_cli.py`:** every new rule tag (`opt.no-gradient`, `opt.flag-not-for-method`), a program that prints the value and gradient of the sum of squares gives the built-in answer bit for bit, a program that prints only the value or
+  a NaN is refused, and `--maxiter` reaches status 1 with the limit exact.
+
+**Corrected in place:** the first version of the mutant list had a mutant of the first line search that no input can kill (the guard above) and a mutant of the second whose branch no case reaches; the first was shown unreachable and removed, the second is recorded
+as unexercised. And the first plan for this section was "equal to scipy to a tolerance"; the sequential oracle showed the tolerance was hiding nothing and the stronger claim holds.
 
 ## 7. Open
 

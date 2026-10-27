@@ -1,0 +1,663 @@
+edition 7;
+
+module opt.bfgs;
+
+import opt.dcsrch;
+import opt.objective;
+import std.linalg;
+import std.math;
+
+// BFGS as `scipy.optimize.minimize(method="BFGS")` does it with a gradient (docs/design.md section 9): `_minimize_bfgs`, `_line_search_wolfe12`, `line_search_wolfe1` (`dcsrch`), `line_search_wolfe2` with `_zoom`,
+// `_cubicmin` and `_quadmin`, and `ScalarFunction`'s rule for which evaluations are counted. The same operations in the same order, with sequential sums where scipy uses BLAS.
+//
+// The line search works on one vector of floats `w`, 6 n long: x_k, p_k, the trial point, the point and the gradient of the cache, and the gradient `gval` of the last `derphi`.
+//   `ib` holds the integers: 0 nfev, 1 njev, 2 value up to date, 3 gradient up to date, 4 the program has run at the cached point, 5 there is a cached point, 6 `gval` is valid, 7 the objective's error code (0 = none)
+//   `sc[0]` is the cached value.
+
+fn o_pk(n: int) -> [] int {
+    return n;
+}
+
+fn o_xt(n: int) -> [] int {
+    return 2 * n;
+}
+
+fn o_cx(n: int) -> [] int {
+    return 3 * n;
+}
+
+fn o_cg(n: int) -> [] int {
+    return 4 * n;
+}
+
+fn o_gv(n: int) -> [] int {
+    return 5 * n;
+}
+
+fn dot_at[&w](w: &w [float], a: int, b: int, n: int) -> [] float {
+    var s = 0.0;
+    var k = 0;
+    while k < n {
+        s = s + w[a + k] * w[b + k];
+        k = k + 1;
+    }
+    return s;
+}
+
+fn max_abs_at[&w](w: &w [float], a: int, n: int) -> [] float {
+    var m = 0.0;
+    var k = 0;
+    while k < n {
+        var v = w[a + k];
+        if v < 0.0 {
+            v = 0.0 - v;
+        }
+        if v > m {
+            m = v;
+        }
+        k = k + 1;
+    }
+    return m;
+}
+
+// run the objective program (or built-in) at the cached point: its value and gradient into the cache
+fn run_objective[&h, &i, &x, &c, &p, &a, &w, &s, &b](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], n: int) -> [heap, exec(""), clock, poll] int {
+    region r {
+        let pt = alloc_slice[r](n, 0.0);
+        let gt = alloc_slice[r](n, 0.0);
+        var k = 0;
+        while k < n {
+            pt[k] = w[o_cx(n) + k];
+            k = k + 1;
+        }
+        let (code, f) = objective.value_gradient(heap, io, exec, clock, kind, exe, argv, pt, gt);
+        if code != 0 {
+            ib[7] = code;
+        } else {
+            k = 0;
+            while k < n {
+                w[o_cg(n) + k] = gt[k];
+                k = k + 1;
+            }
+            sc[0] = f;
+            ib[4] = 1;
+        }
+    }
+    return 0;
+}
+
+// `ScalarFunction._update_x`: if the trial point differs from the cached one (a NaN is never equal), cache it and mark the value and gradient out of date
+fn sync[&w, &b](w: &!w [float], ib: &!b [int], n: int) -> [] int {
+    var same = ib[5] == 1;
+    var k = 0;
+    while k < n && same {
+        if !(w[o_xt(n) + k] == w[o_cx(n) + k]) {
+            same = false;
+        }
+        k = k + 1;
+    }
+    if !same {
+        k = 0;
+        while k < n {
+            w[o_cx(n) + k] = w[o_xt(n) + k];
+            k = k + 1;
+        }
+        ib[5] = 1;
+        ib[2] = 0;
+        ib[3] = 0;
+        ib[4] = 0;
+    }
+    return 0;
+}
+
+fn ensure_value[&h, &i, &x, &c, &p, &a, &w, &s, &b](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], n: int) -> [heap, exec(""), clock, poll] int {
+    if ib[2] == 0 {
+        if ib[4] == 0 && ib[7] == 0 {
+            run_objective(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n);
+        }
+        ib[0] = ib[0] + 1;
+        ib[2] = 1;
+    }
+    return 0;
+}
+
+fn ensure_gradient[&h, &i, &x, &c, &p, &a, &w, &s, &b](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], n: int) -> [heap, exec(""), clock, poll] int {
+    if ib[3] == 0 {
+        if ib[4] == 0 && ib[7] == 0 {
+            run_objective(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n);
+        }
+        ib[1] = ib[1] + 1;
+        ib[3] = 1;
+    }
+    return 0;
+}
+
+fn set_trial[&w](w: &!w [float], n: int, s: float) -> [] int {
+    var k = 0;
+    while k < n {
+        w[o_xt(n) + k] = w[k] + s * w[o_pk(n) + k];
+        k = k + 1;
+    }
+    return 0;
+}
+
+// phi(s) = f(x_k + s p_k)
+fn phi[&h, &i, &x, &c, &p, &a, &w, &s, &b](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], n: int, step: float) -> [heap, exec(""), clock, poll] float {
+    set_trial(w, n, step);
+    sync(w, ib, n);
+    ensure_value(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n);
+    return sc[0];
+}
+
+// phi'(s) = grad f(x_k + s p_k) . p_k, the gradient kept in `gval`
+fn derphi[&h, &i, &x, &c, &p, &a, &w, &s, &b](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], n: int, step: float) -> [heap, exec(""), clock, poll] float {
+    set_trial(w, n, step);
+    sync(w, ib, n);
+    ensure_gradient(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n);
+    var k = 0;
+    while k < n {
+        w[o_gv(n) + k] = w[o_cg(n) + k];
+        k = k + 1;
+    }
+    ib[6] = 1;
+    return dot_at(w, o_gv(n), o_pk(n), n);
+}
+
+// ---- line_search_wolfe1 ------------------------------------------------------------------------------------------------------------------------------------------
+
+// (ok, step, value at the step, value at 0)
+fn wolfe1[&h, &i, &x, &c, &p, &a, &w, &s, &b, &d](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], ds: &!d [float], n: int, phi0: float, old_phi0: float, derphi0: float, c1: float, c2: float, amax: float, amin: float, xtol: float) -> [heap, exec(""), clock, poll] (int, float, float, float) {
+    var alpha1 = 1.0;
+    if derphi0 != 0.0 {
+        alpha1 = dcsrch.pmin(1.0, 1.01 * 2.0 * (phi0 - old_phi0) / derphi0);
+        if alpha1 < 0.0 {
+            alpha1 = 1.0;
+        }
+    }
+    var k = 0;
+    while k < dcsrch.state_size() {
+        ds[k] = 0.0;
+        k = k + 1;
+    }
+    ds[15] = c1;
+    ds[16] = c2;
+    ds[17] = xtol;
+    ds[18] = amin;
+    ds[19] = amax;
+    var phi1 = phi0;
+    var derphi1 = derphi0;
+    var task = 0;
+    var stp = alpha1;
+    var iter = 0;
+    var finished = false;
+    var failed = false;
+    while iter < 100 && !finished && ib[7] == 0 {
+        let (s2, f2, g2, t2) = dcsrch.iterate(ds, alpha1, phi1, derphi1, task);
+        stp = s2;
+        phi1 = f2;
+        derphi1 = g2;
+        task = t2;
+        if stp - stp != 0.0 {
+            task = 3;
+            failed = true;
+            finished = true;
+        } else if task == 1 {
+            alpha1 = stp;
+            phi1 = phi(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, stp);
+            derphi1 = derphi(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, stp);
+        } else {
+            finished = true;
+        }
+        iter = iter + 1;
+    }
+    if !finished || failed || task != 2 {
+        return (0, 0.0, 0.0, phi0);
+    }
+    return (1, stp, phi1, phi0);
+}
+
+// ---- line_search_wolfe2 ------------------------------------------------------------------------------------------------------------------------------------------
+
+// `_cubicmin`: (found, minimiser); an arithmetic error of scipy's (division by zero, a negative radicand, an overflow) is "not found"
+fn cubicmin(a: float, fa: float, fpa: float, b: float, fb: float, c: float, fc: float) -> [] (int, float) {
+    let cc = fpa;
+    let db = b - a;
+    let dc = c - a;
+    let dd = db * dc;
+    let denom = dd * dd * (db - dc);
+    if denom == 0.0 || denom - denom != 0.0 {
+        return (0, 0.0);
+    }
+    let v0 = fb - fa - cc * db;
+    let v1 = fc - fa - cc * dc;
+    let d00 = dc * dc;
+    let d01 = 0.0 - db * db;
+    let d10 = 0.0 - math.pow(dc, 3.0);
+    let d11 = math.pow(db, 3.0);
+    var aa = d00 * v0 + d01 * v1;
+    var bb = d10 * v0 + d11 * v1;
+    aa = aa / denom;
+    bb = bb / denom;
+    let radical = bb * bb - 3.0 * aa * cc;
+    if !(radical >= 0.0) || 3.0 * aa == 0.0 {
+        return (0, 0.0);
+    }
+    let xmin = a + (0.0 - bb + sqrt(radical)) / (3.0 * aa);
+    if xmin - xmin != 0.0 {
+        return (0, 0.0);
+    }
+    return (1, xmin);
+}
+
+fn quadmin(a: float, fa: float, fpa: float, b: float, fb: float) -> [] (int, float) {
+    let dd = fa;
+    let cc = fpa;
+    let db = b - a * 1.0;
+    let sq = db * db;
+    if sq == 0.0 {
+        return (0, 0.0);
+    }
+    let bq = (fb - dd - cc * db) / sq;
+    if 2.0 * bq == 0.0 {
+        return (0, 0.0);
+    }
+    let xmin = a - cc / (2.0 * bq);
+    if xmin - xmin != 0.0 {
+        return (0, 0.0);
+    }
+    return (1, xmin);
+}
+
+// `_zoom`: (ok, step, value, derivative)
+fn zoom[&h, &i, &x, &c, &p, &a, &w, &s, &b](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], n: int, a_lo0: float, a_hi0: float, phi_lo0: float, phi_hi0: float, derphi_lo0: float, phi0: float, derphi0: float, c1: float, c2: float) -> [heap, exec(""), clock, poll] (int, float, float) {
+    var a_lo = a_lo0;
+    var a_hi = a_hi0;
+    var phi_lo = phi_lo0;
+    var phi_hi = phi_hi0;
+    var derphi_lo = derphi_lo0;
+    let maxiter = 10;
+    var it = 0;
+    let delta1 = 0.2;
+    let delta2 = 0.1;
+    var phi_rec = phi0;
+    var a_rec = 0.0;
+    var done = false;
+    var ok = 0;
+    var a_star = 0.0;
+    var val_star = 0.0;
+    var cchk = 0.0;
+    var a_j = 0.0;
+    while !done && ib[7] == 0 {
+        let dalpha = a_hi - a_lo;
+        var lo = a_lo;
+        var hi = a_hi;
+        if dalpha < 0.0 {
+            lo = a_hi;
+            hi = a_lo;
+        }
+        var have = 0;
+        if it > 0 {
+            cchk = delta1 * dalpha;
+            let (found, v) = cubicmin(a_lo, phi_lo, derphi_lo, a_hi, phi_hi, a_rec, phi_rec);
+            have = found;
+            a_j = v;
+        }
+        if it == 0 || have == 0 || a_j > hi - cchk || a_j < lo + cchk {
+            let qchk = delta2 * dalpha;
+            let (found2, v2) = quadmin(a_lo, phi_lo, derphi_lo, a_hi, phi_hi);
+            a_j = v2;
+            if found2 == 0 || a_j > hi - qchk || a_j < lo + qchk {
+                a_j = a_lo + 0.5 * dalpha;
+            }
+        }
+        let phi_aj = phi(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, a_j);
+        if phi_aj > phi0 + c1 * a_j * derphi0 || phi_aj >= phi_lo {
+            phi_rec = phi_hi;
+            a_rec = a_hi;
+            a_hi = a_j;
+            phi_hi = phi_aj;
+        } else {
+            let derphi_aj = derphi(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, a_j);
+            var absd = derphi_aj;
+            if absd < 0.0 {
+                absd = 0.0 - absd;
+            }
+            if absd <= (0.0 - c2) * derphi0 {
+                a_star = a_j;
+                val_star = phi_aj;
+                ok = 1;
+                done = true;
+            } else {
+                if derphi_aj * (a_hi - a_lo) >= 0.0 {
+                    phi_rec = phi_hi;
+                    a_rec = a_hi;
+                    a_hi = a_lo;
+                    phi_hi = phi_lo;
+                } else {
+                    phi_rec = phi_lo;
+                    a_rec = a_lo;
+                }
+                a_lo = a_j;
+                phi_lo = phi_aj;
+                derphi_lo = derphi_aj;
+            }
+        }
+        if !done {
+            it = it + 1;
+            if it > maxiter {
+                done = true;
+            }
+        }
+    }
+    return (ok, a_star, val_star);
+}
+
+// `scalar_search_wolfe2` (no extra condition): (ok, step, value at the step, value at 0 (the old value)); `ib[6]` is 0 afterwards when the loop ran out and no gradient was computed at the step
+fn wolfe2[&h, &i, &x, &c, &p, &a, &w, &s, &b](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], n: int, phi0: float, old_phi0: float, derphi0: float, c1: float, c2: float, amax: float) -> [heap, exec(""), clock, poll] (int, float, float, float) {
+    ib[6] = 0;
+    var alpha0 = 0.0;
+    var alpha1 = 1.0;
+    if derphi0 != 0.0 {
+        alpha1 = dcsrch.pmin(1.0, 1.01 * 2.0 * (phi0 - old_phi0) / derphi0);
+    }
+    if alpha1 < 0.0 {
+        alpha1 = 1.0;
+    }
+    alpha1 = dcsrch.pmin(alpha1, amax);
+    var phi_a1 = phi(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, alpha1);
+    var phi_a0 = phi0;
+    var derphi_a0 = derphi0;
+    var i2 = 0;
+    var done = false;
+    var ok = 0;
+    var alpha_star = 0.0;
+    var phi_star = 0.0;
+    var exhausted = true;
+    while i2 < 10 && !done && ib[7] == 0 {
+        if alpha1 == 0.0 || alpha0 > amax {
+            exhausted = false;
+            done = true;
+        } else {
+            let not_first = i2 > 0;
+            if phi_a1 > phi0 + c1 * alpha1 * derphi0 || phi_a1 >= phi_a0 && not_first {
+                let (zok, zs, zv) = zoom(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, alpha0, alpha1, phi_a0, phi_a1, derphi_a0, phi0, derphi0, c1, c2);
+                ok = zok;
+                alpha_star = zs;
+                phi_star = zv;
+                exhausted = false;
+                done = true;
+            } else {
+                let derphi_a1 = derphi(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, alpha1);
+                var absd = derphi_a1;
+                if absd < 0.0 {
+                    absd = 0.0 - absd;
+                }
+                if absd <= (0.0 - c2) * derphi0 {
+                    ok = 1;
+                    alpha_star = alpha1;
+                    phi_star = phi_a1;
+                    exhausted = false;
+                    done = true;
+                } else if derphi_a1 >= 0.0 {
+                    let (zok2, zs2, zv2) = zoom(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, alpha1, alpha0, phi_a1, phi_a0, derphi_a1, phi0, derphi0, c1, c2);
+                    ok = zok2;
+                    alpha_star = zs2;
+                    phi_star = zv2;
+                    exhausted = false;
+                    done = true;
+                } else {
+                    var alpha2 = 2.0 * alpha1;
+                    alpha2 = dcsrch.pmin(alpha2, amax);
+                    alpha0 = alpha1;
+                    alpha1 = alpha2;
+                    phi_a0 = phi_a1;
+                    phi_a1 = phi(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, alpha1);
+                    derphi_a0 = derphi_a1;
+                }
+            }
+        }
+        i2 = i2 + 1;
+    }
+    if exhausted && ib[7] == 0 && !done {
+        // the loop ran out: scipy answers the last step with no derivative, and the caller computes the gradient there
+        ok = 1;
+        alpha_star = alpha1;
+        phi_star = phi_a1;
+        ib[6] = 0;
+    }
+    return (ok, alpha_star, phi_star, phi0);
+}
+
+// `_line_search_wolfe12`: (ok, step, value at the step, old value)
+fn line_search[&h, &i, &x, &c, &p, &a, &w, &s, &b, &d](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], w: &!w [float], ib: &!b [int], sc: &!s [float], ds: &!d [float], n: int, old_fval: float, old_old_fval: float, derphi0: float, c1: float, c2: float) -> [heap, exec(""), clock, poll] (int, float, float, float) {
+    let (ok1, stp1, f1, o1) = wolfe1(heap, io, exec, clock, kind, exe, argv, w, ib, sc, ds, n, old_fval, old_old_fval, derphi0, c1, c2, 1.0e100, 1.0e-100, 1.0e-14);
+    if ok1 == 1 || ib[7] != 0 {
+        return (ok1, stp1, f1, o1);
+    }
+    return wolfe2(heap, io, exec, clock, kind, exe, argv, w, ib, sc, n, old_fval, old_old_fval, derphi0, c1, c2, 1.0e100);
+}
+
+// ---- _minimize_bfgs ----------------------------------------------------------------------------------------------------------------------------------------------
+
+// Minimise from `x0` with gradient tolerance `gtol` and at most `maxiter` iterations. The minimiser goes into `best`, the gradient there into `jac`. Answers (status, value, nfev, njev, iterations):
+// status 0 converged, 1 `maxiter` reached, 2 the line search failed (scipy's "precision loss"), 3 NaN, 10 + c when the objective failed with code c (`best` is then the point it failed at).
+// One vector of floats holds everything: the line search's (6 n), its scalars (4), dcsrch's state (20), five n x n matrices (H, A1, A2 and two products) and four vectors of n.
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &j](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], gtol: float, maxiter: int, best: &!o [float], jac: &!j [float]) -> [heap, exec(""), clock, poll] (int, float, int, int, int) {
+    let n = len(x0);
+    let o_sc = 6 * n;
+    let o_ds = o_sc + 4;
+    let o_hk = o_ds + dcsrch.state_size();
+    let o_a1 = o_hk + n * n;
+    let o_a2 = o_a1 + n * n;
+    let o_t1 = o_a2 + n * n;
+    let o_t2 = o_t1 + n * n;
+    let o_gf = o_t2 + n * n;
+    let o_yk = o_gf + n;
+    let o_sk = o_yk + n;
+    let o_tv = o_sk + n;
+    let wk = box_slice(heap, o_tv + n, 0.0);
+    let ibox = box_slice(heap, 8, 0);
+    var status = 0;
+    var warnflag = 0;
+    var fval = 0.0;
+    var k = 0;
+    var nfev = 0;
+    var njev = 0;
+    borrow mut wk as &!ww in {
+        borrow mut ibox as &!bw in {
+            let all = contents(ww);
+            let ib = contents(bw);
+            var m = 0;
+            while m < n {
+                all[m] = x0[m];
+                all[o_xt(n) + m] = x0[m];
+                m = m + 1;
+            }
+            // ScalarFunction's construction: the value and the gradient at x0, counted once each
+            sync(all[0..6 * n], ib, n);
+            ensure_value(heap, io, exec, clock, kind, exe, argv, all[0..6 * n], ib, all[o_sc..o_sc + 4], n);
+            ensure_gradient(heap, io, exec, clock, kind, exe, argv, all[0..6 * n], ib, all[o_sc..o_sc + 4], n);
+            if ib[7] != 0 {
+                status = 10 + ib[7];
+            } else {
+                var old_fval = all[o_sc];
+                m = 0;
+                while m < n {
+                    all[o_gf + m] = all[o_cg(n) + m];
+                    m = m + 1;
+                }
+                var r = 0;
+                while r < n {
+                    var q = 0;
+                    while q < n {
+                        all[o_hk + r * n + q] = 0.0;
+                        if r == q {
+                            all[o_hk + r * n + q] = 1.0;
+                        }
+                        q = q + 1;
+                    }
+                    r = r + 1;
+                }
+                var gg = 0.0;
+                m = 0;
+                while m < n {
+                    gg = gg + all[o_gf + m] * all[o_gf + m];
+                    m = m + 1;
+                }
+                var old_old_fval = old_fval + sqrt(gg) / 2.0;
+                var gnorm = 0.0;
+                m = 0;
+                while m < n {
+                    var av = all[o_gf + m];
+                    if av < 0.0 {
+                        av = 0.0 - av;
+                    }
+                    if av > gnorm {
+                        gnorm = av;
+                    }
+                    m = m + 1;
+                }
+                var stop = false;
+                while gnorm > gtol && k < maxiter && !stop {
+                    // p_k = -H g
+                    linalg.gemv(n, n, all[o_hk..o_hk + n * n], all[o_gf..o_gf + n], all[o_tv..o_tv + n]);
+                    var derphi0 = 0.0;
+                    m = 0;
+                    while m < n {
+                        all[o_pk(n) + m] = 0.0 - all[o_tv + m];
+                        derphi0 = derphi0 + all[o_gf + m] * all[o_pk(n) + m];
+                        m = m + 1;
+                    }
+                    let (ok, alpha, fnew, fold) = line_search(heap, io, exec, clock, kind, exe, argv, all[0..6 * n], ib, all[o_sc..o_sc + 4], all[o_ds..o_ds + dcsrch.state_size()], n, old_fval, old_old_fval, derphi0, 0.0001, 0.9);
+                    if ib[7] != 0 {
+                        status = 10 + ib[7];
+                        stop = true;
+                    } else if ok == 0 {
+                        warnflag = 2;
+                        stop = true;
+                    } else {
+                        old_fval = fnew;
+                        old_old_fval = fold;
+                        m = 0;
+                        while m < n {
+                            all[o_sk + m] = alpha * all[o_pk(n) + m];
+                            all[m] = all[m] + all[o_sk + m];
+                            m = m + 1;
+                        }
+                        if ib[6] != 1 {
+                            // scipy: gfkp1 is None, so the gradient is computed at the new point
+                            m = 0;
+                            while m < n {
+                                all[o_xt(n) + m] = all[m];
+                                m = m + 1;
+                            }
+                            sync(all[0..6 * n], ib, n);
+                            ensure_gradient(heap, io, exec, clock, kind, exe, argv, all[0..6 * n], ib, all[o_sc..o_sc + 4], n);
+                            m = 0;
+                            while m < n {
+                                all[o_gv(n) + m] = all[o_cg(n) + m];
+                                m = m + 1;
+                            }
+                        }
+                        m = 0;
+                        while m < n {
+                            all[o_yk + m] = all[o_gv(n) + m] - all[o_gf + m];
+                            all[o_gf + m] = all[o_gv(n) + m];
+                            m = m + 1;
+                        }
+                        k = k + 1;
+                        gnorm = 0.0;
+                        m = 0;
+                        while m < n {
+                            var av2 = all[o_gf + m];
+                            if av2 < 0.0 {
+                                av2 = 0.0 - av2;
+                            }
+                            if av2 > gnorm || av2 != av2 {
+                                gnorm = av2;
+                            }
+                            m = m + 1;
+                        }
+                        if gnorm <= gtol {
+                            stop = true;
+                        } else if alpha * max_abs_at(all[0..6 * n], o_pk(n), n) <= 0.0 {
+                            stop = true;
+                        } else if old_fval - old_fval != 0.0 {
+                            warnflag = 2;
+                            stop = true;
+                        } else {
+                            var rhok_inv = 0.0;
+                            m = 0;
+                            while m < n {
+                                rhok_inv = rhok_inv + all[o_yk + m] * all[o_sk + m];
+                                m = m + 1;
+                            }
+                            var rhok = 1000.0;
+                            if rhok_inv != 0.0 {
+                                rhok = 1.0 / rhok_inv;
+                            }
+                            var ri = 0;
+                            while ri < n {
+                                var ci = 0;
+                                while ci < n {
+                                    var ident = 0.0;
+                                    if ri == ci {
+                                        ident = 1.0;
+                                    }
+                                    all[o_a1 + ri * n + ci] = ident - all[o_sk + ri] * all[o_yk + ci] * rhok;
+                                    all[o_a2 + ri * n + ci] = ident - all[o_yk + ri] * all[o_sk + ci] * rhok;
+                                    ci = ci + 1;
+                                }
+                                ri = ri + 1;
+                            }
+                            linalg.gemm(n, n, n, all[o_hk..o_hk + n * n], all[o_a2..o_a2 + n * n], all[o_t1..o_t1 + n * n]);
+                            linalg.gemm(n, n, n, all[o_a1..o_a1 + n * n], all[o_t1..o_t1 + n * n], all[o_t2..o_t2 + n * n]);
+                            ri = 0;
+                            while ri < n {
+                                var ci2 = 0;
+                                while ci2 < n {
+                                    all[o_hk + ri * n + ci2] = all[o_t2 + ri * n + ci2] + rhok * all[o_sk + ri] * all[o_sk + ci2];
+                                    ci2 = ci2 + 1;
+                                }
+                                ri = ri + 1;
+                            }
+                        }
+                    }
+                }
+                fval = old_fval;
+                var nan = gnorm != gnorm || fval != fval;
+                m = 0;
+                while m < n {
+                    if all[m] != all[m] {
+                        nan = true;
+                    }
+                    m = m + 1;
+                }
+                if status == 0 {
+                    if warnflag == 2 {
+                        status = 2;
+                    } else if k >= maxiter {
+                        status = 1;
+                    } else if nan {
+                        status = 3;
+                    }
+                }
+            }
+            m = 0;
+            while m < n {
+                if status >= 10 {
+                    best[m] = all[o_xt(n) + m];
+                } else {
+                    best[m] = all[m];
+                }
+                jac[m] = all[o_gf + m];
+                m = m + 1;
+            }
+            nfev = ib[0];
+            njev = ib[1];
+        }
+    }
+    unbox_slice(heap, wk);
+    unbox_slice(heap, ibox);
+    return (status, fval, nfev, njev, k);
+}
