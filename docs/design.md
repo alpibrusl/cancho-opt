@@ -140,6 +140,34 @@ gate the gradient of the energy is exact from two more evaluations per angle (th
 **Corrected in place:** the first version of the mutant list had a mutant of the first line search that no input can kill (the guard above) and a mutant of the second whose branch no case reaches; the first was shown unreachable and removed, the second is recorded
 as unexercised. And the first plan for this section was "equal to scipy to a tolerance"; the sequential oracle showed the tolerance was hiding nothing and the stronger claim holds.
 
+## 10. Time against scipy (measured, one machine)
+
+`OPT=build/opt python3 scripts/bench_scipy.py --markdown`. Machine: Intel Xeon 2.10 GHz, 4 cores (neither side uses more than one), x86-64 Linux; scipy 1.18.1, numpy 2.5.3; `opt` built by a *debug build* of the compiler (whether that
+changes the code it emits was not checked here). The built-in Rosenbrock objective, starting at (-1.2, 1, -1.2, 1, ...). `opt` is timed as a whole process, start included; scipy's `minimize` alone, **not** counting Python's
+start or the import of scipy (which favours scipy by far more than a process start costs); each time the minimum of 7 runs (5 for Nelder-Mead at 5 and 10 parameters, 3 for the pure-Python objective).
+
+| method | parameters | opt | scipy (numpy `rosen`) | scipy (pure-Python objective) | iterations / evaluations: opt | scipy | same work |
+|---|---|---|---|---|---|---|---|
+| BFGS | 2 | 1.3 ms | 3.7 ms | 2.5 ms | 34 / 41 | 34 / 41 | yes |
+| BFGS | 5 | 1.5 ms | 6.2 ms | 4.5 ms | 51 / 62 | 51 / 62 | yes |
+| BFGS | 10 | 2.0 ms | 11.2 ms | 8.2 ms | 75 / 85 | 74 / 136 | no |
+| BFGS | 20 | 5.3 ms | 19.6 ms | 23.9 ms | 165 / 188 | 165 / 188 | yes |
+| BFGS | 30 | 18.2 ms | 24.8 ms | 24.9 ms | 220 / 247 | 222 / 250 | no |
+| Nelder-Mead | 2 | 1.3 ms | 4.9 ms | 2.6 ms | 117 / 219 | 117 / 219 | yes |
+| Nelder-Mead | 5 | 1.5 ms | 18.4 ms | 12.3 ms | 511 / 828 | 511 / 828 | yes |
+| Nelder-Mead | 10 | 4.3 ms | 164.9 ms | 71.5 ms | 4754 / 6604 | 4949 / 6946 | no |
+
+Process start and a one-parameter run of `opt`: 1.2 ms.
+
+**What it shows.** Where both did the same work (the rows marked yes), `opt` took 2.8 to 12 times less time than scipy with numpy's `rosen` (1.7 to 9 times less than scipy with a pure-Python objective). The rows marked *no* are not a speed comparison:
+scipy's `rosen` sums with numpy's pairwise sum from 9 terms and its BLAS products order their sums differently, so the iterations differ (section 9.2); at 10 parameters Nelder-Mead's 165 ms against 4.3 ms is mostly 6,946 evaluations against 6,604 of an
+objective that costs scipy about 20 microseconds a call and `opt` well under one. The advantage **shrinks with size** for BFGS (about 3.7 times at 20 parameters, 1.4 at 30): the update's matrix products are plain sequential loops
+(`std.linalg`) and scipy's are BLAS, so beyond the 32 parameters `opt` accepts scipy would be expected to win; that was not measured.
+
+**What it does not show.** These are built-in objectives, which run inside `opt`. A real objective is a program that `opt` starts for every evaluation (section 4), at the 1.2 ms of a process start (the VQE BFGS run of cancho-quantum:
+56 gradients in 0.1 s), while scipy calls a Python function in tens of microseconds. For a cheap objective scipy in-process is far faster; for one that costs milliseconds (a `qsim` run) the start no longer matters. One machine, one
+build, one starting point per size; the timings move with the machine and are not a gate (`scripts/bench_scipy.py` prints them, it does not assert them).
+
 ## 7. Open
 
 * Levenberg-Marquardt and a residual protocol (section 1).
