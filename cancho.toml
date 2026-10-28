@@ -1,6 +1,6 @@
 [package]
 name = "opt"
-cancho = "076809419ebf13ad7a506e5a60008baa8e92bd1d"   # the first compiler with std.linalg (cancho#627), which `--method bfgs` uses: built and tested here with a binary of that branch before it merged
+cancho = "f4ead824f33b291a0ad7620a34a0c1346a7abe4f"   # the first compiler with std.linalg (cancho#627), which `--method bfgs` uses: built and tested here with a binary of that branch before it merged
 
 [[bin]]
 name = "opt"
