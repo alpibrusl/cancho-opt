@@ -201,8 +201,8 @@ README), the choice of the defaults beyond "order one", blocking, second-order S
 | 32 | 100 | 1.8 ms | 6.2 ms | 3.4x | 201 | 201 |
 | 32 | 1000 | 2.2 ms | 63.2 ms | 28.8x | 2001 | 2001 |
 
-`opt` is 3.7 to 4.8 times faster at 100 iterations and 32 to 49 times at 1,000. The reason is plain: at 1,000 iterations `opt` takes 1.5 to 1.9 ms, of which 1.2 ms is the process start, so the 2,001 evaluations cost it about 0.3 ms; Qiskit spends 60 to 70 ms,
-about 30 microseconds an iteration in Python. **What it does not show** is the same as in section 10: a built-in objective runs inside `opt`; a program objective costs the 1.2 ms of a process start per evaluation, which is what dominates the
+`opt` is 3.4 to 5.6 times faster at 100 iterations and 29 to 38 times at 1,000 (a second run of the same script gave 3.7 to 4.8 and 32 to 49: the machine moves the ratio by a third). The reason is plain: at 1,000 iterations `opt` takes 1.5 to 2.2 ms, of which 1.2 ms is the process start, so the 2,001 evaluations cost it about 0.3 to 1 ms; Qiskit spends 55 to 63 ms,
+about 55 to 65 microseconds an iteration in Python. **What it does not show** is the same as in section 10: a built-in objective runs inside `opt`; a program objective costs the 1.2 ms of a process start per evaluation, which is what dominates the
 sampled VQE (1,601 evaluations in 2.3 s, `cancho-quantum` `docs/benchmark.md`). For an objective that is cheap and in Python, Qiskit's SPSA in-process is the faster way to call it.
 
 ## 7. Open
