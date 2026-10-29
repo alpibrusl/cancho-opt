@@ -189,6 +189,22 @@ sequences and with its source of perturbations replaced by this generator's stre
 deterministic objectives; on noisy ones the gradient estimate is checked to be unbiased over many seeds. Its mutants are listed in the script. **Not claimed:** that SPSA converges well on any problem (that is the experiment of cancho-quantum's
 README), the choice of the defaults beyond "order one", blocking, second-order SPSA, resampling, averaging of the last iterates, calibration of `a` and `c` (Qiskit has them; here they are flags).
 
+**Time against Qiskit's SPSA (measured, one machine).** `OPT=build/opt python3 scripts/bench_spsa.py --markdown`; the machine and versions of section 10 (qiskit-algorithms 0.4.0). The built-in sphere objective, the same gains (a 0.2, c 0.1, A a tenth of the iterations), `opt` timed as a whole process (start included) and
+`SPSA.minimize` alone with a Python objective (the import and Python's start are not counted, which favours Qiskit); minimum of 7 runs. The two draw different perturbations, so their iterates differ, but they do the same work: two evaluations per iteration and one at the end (the counts match).
+
+| parameters | iterations | opt | Qiskit SPSA | Qiskit / opt | evaluations: opt | Qiskit |
+|---|---|---|---|---|---|---|
+| 2 | 100 | 1.4 ms | 7.8 ms | 5.6x | 201 | 201 |
+| 2 | 1000 | 1.5 ms | 55.7 ms | 37.5x | 2001 | 2001 |
+| 8 | 100 | 1.5 ms | 5.4 ms | 3.7x | 201 | 201 |
+| 8 | 1000 | 1.6 ms | 55.6 ms | 35.5x | 2001 | 2001 |
+| 32 | 100 | 1.8 ms | 6.2 ms | 3.4x | 201 | 201 |
+| 32 | 1000 | 2.2 ms | 63.2 ms | 28.8x | 2001 | 2001 |
+
+`opt` is 3.4 to 5.6 times faster at 100 iterations and 29 to 38 times at 1,000 (a second run of the same script gave 3.7 to 4.8 and 32 to 49: the machine moves the ratio by a third). The reason is plain: at 1,000 iterations `opt` takes 1.5 to 2.2 ms, of which 1.2 ms is the process start, so the 2,001 evaluations cost it about 0.3 to 1 ms; Qiskit spends 55 to 63 ms,
+about 55 to 65 microseconds an iteration in Python. **What it does not show** is the same as in section 10: a built-in objective runs inside `opt`; a program objective costs the 1.2 ms of a process start per evaluation, which is what dominates the
+sampled VQE (1,601 evaluations in 2.3 s, `cancho-quantum` `docs/benchmark.md`). For an objective that is cheap and in Python, Qiskit's SPSA in-process is the faster way to call it.
+
 ## 7. Open
 
 * Levenberg-Marquardt and a residual protocol (section 1).
