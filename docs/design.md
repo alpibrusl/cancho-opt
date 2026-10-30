@@ -205,6 +205,28 @@ README), the choice of the defaults beyond "order one", blocking, second-order S
 about 55 to 65 microseconds an iteration in Python. **What it does not show** is the same as in section 10: a built-in objective runs inside `opt`; a program objective costs the 1.2 ms of a process start per evaluation, which is what dominates the
 sampled VQE (1,601 evaluations in 2.3 s, `cancho-quantum` `docs/benchmark.md`). For an objective that is cheap and in Python, Qiskit's SPSA in-process is the faster way to call it.
 
+## 12. Examples: training a model with `opt` (written before the examples; gates, then measured numbers)
+
+Fitting a model is minimising a loss over its parameters, and the objective of section 4 is a program that is given the parameters and
+prints the loss (and, for `--method bfgs`, the gradient). `examples/train/` holds one program for each way that is used, and
+`scripts/check_examples.py` runs every one and fails if its claim does not hold, so the README of the examples cannot drift from the code.
+They need `python3` and nothing else (the standard library). **Measured while writing them:** `opt` starts the program it is given by that name, without searching `PATH`, so a bare `python3` is `opt.objective-failed` and the commands name the interpreter by absolute path; the environment it gives the program is `PATH` and `HOME=/tmp` (section 4).
+
+| Use case | Method | Program | Claim the gate checks |
+|---|---|---|---|
+| a convex fit with an exact gradient | `bfgs` | `logistic.py`, 3 parameters | converged, largest gradient component below `gtol`, and the loss equal to an independent Newton solve to 1e-9 (measured: 15 evaluations, 2.95e-7, 7.6e-13 apart) |
+| a small network by backpropagation | `bfgs` | `mlp_xor.py`, 9 parameters | at least one of a fixed list of 8 starts classifies the four points, and **the starts that do not are reported, not hidden**: measured, 1 of 8 solves it and 7 of 8 report `converged` at a local minimum (a network has local minima; a convex fit has none) |
+| a gradient that cannot be written down, or a loss that is noisy | `spsa` | `noisy_logistic.py`, 3 parameters | the loss falls below a bound that the start is above; **not** that SPSA reaches the optimum (section 11); measured, the true loss goes from 0.693 to 0.376 in 300 iterations, the optimum being 0.231 |
+| a loss with a corner, so no gradient | `nelder-mead` | `relu_fit.py`, 7 parameters | a ReLU network fits `|x|` on a grid to a stated tolerance (measured: 1.4e-13 in 2,039 evaluations) |
+| trusting a gradient before using it | none (a check) | `gradcheck.py` | every program that prints a gradient agrees with central differences to 1e-6, and a deliberately wrong gradient fails |
+
+**Choices.** The programs are Python because the objective is a program and the repository's own gates are Python; they are examples of
+the protocol, not part of `opt`. 32 parameters is the limit of `opt` (section 5), so these are small networks; the cost of a program
+objective is a process start per evaluation (section 10), so they are not an answer for a network with millions of parameters.
+
+**Open.** An objective computed by a cancho-gpu kernel: `cancho-gpu check --run` takes no input (its tensors are the interpreter's own
+made-up ones), so a kernel cannot be given parameters from a command line; docs/training.md of cancho-gpu records what it would take.
+
 ## 7. Open
 
 * Levenberg-Marquardt and a residual protocol (section 1).
