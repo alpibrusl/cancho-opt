@@ -29,8 +29,11 @@ OPT=build/opt python3 scripts/check_scipy.py [--mutants]    # needs scipy; --mut
 OPT=build/opt python3 scripts/check_bfgs.py [--mutants] [--wide] [--blas]
 OPT=build/opt python3 scripts/check_spsa.py [--mutants]     # needs qiskit-algorithms
 OPT=build/opt python3 scripts/check_cli.py
+OPT=build/opt python3 scripts/check_examples.py              # examples/train: fitting a model, one program for each use case
 OPT=build/opt python3 scripts/bench_scipy.py [--markdown]     # time against scipy: docs/design.md section 10
 ```
+
+**Training a model.** The objective of a fit is a program that prints the loss: [`examples/train/`](examples/train/README.md) has a convex fit with a gradient (BFGS), a small network by backpropagation (and why `converged` is not "solved"), a noisy loss (SPSA), a loss with corners (Nelder-Mead) and a gradient check; `docs/design.md` section 12.
 
 Authority: the binary starts the objective program (`exec`, and a clock for its timeout) and reads and writes standard input and
 output; it reads no file and has no network. Licence EUPL-1.2, copyright Alpibru S.L.
