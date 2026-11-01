@@ -15,7 +15,7 @@ opt minimize --method bfgs --x0 -1.2,1 --objective rosenbrock
 opt minimize --x0 1,1,1 --lower 0.05,0.05,0.05 --upper 20,20,20 --step 0.5 --maxfev 400 -- ./my-objective ARG...
 ```
 
-The objective of a real problem is a program: for each point, `opt` writes the numbers on its standard input and reads one number from its
+The objective of a real problem is a program (with `--persistent` it is started once and answers a line for each line, `docs/design.md` section 14): for each point, `opt` writes the numbers on its standard input and reads one number from its
 standard output. That is how cancho-quantum's `hw fit` minimises the misfit of a noise model that only the simulator `qsim` can compute.
 
 **Status.** `minimize --method nelder-mead`, which is `scipy.optimize.minimize(method="Nelder-Mead")` step for step: the same iterates, bit for bit
@@ -24,11 +24,12 @@ searches (MINPACK's `dcsrch`, then `zoom`), bit for bit against scipy with its B
 in 7 takes one or two more iterations: `docs/design.md` section 9); and `--method spsa` for noisy objectives (two evaluations per iteration whatever the dimension, no gradient; checked against Qiskit's SPSA, point for point to 1e-9, `scripts/check_spsa.py`, 10 mutants killed; `docs/design.md` section 11). Levenberg-Marquardt and a finite-difference gradient are not built; `docs/design.md` says what is claimed, how it is measured and what is open.
 
 ```
-cancho build --bin opt            # or: cancho build lib/nm/objective.cho lib/nm/lists.cho lib/nm/nm.cho lib/bfgs/dcsrch.cho lib/bfgs/bfgs.cho lib/spsa/spsa.cho tools/opt/main.cho --std -o build/opt
+cancho build --bin opt            # or: cancho build lib/nm/objective.cho lib/nm/lists.cho lib/nm/nm.cho lib/bfgs/dcsrch.cho lib/bfgs/bfgs.cho lib/spsa/spsa.cho lib/persist/persist.cho tools/opt/main.cho --std -o build/opt
 OPT=build/opt python3 scripts/check_scipy.py [--mutants]    # needs scipy; --mutants needs CANCHO=the compiler
 OPT=build/opt python3 scripts/check_bfgs.py [--mutants] [--wide] [--blas]
 OPT=build/opt python3 scripts/check_spsa.py [--mutants]     # needs qiskit-algorithms
 OPT=build/opt python3 scripts/check_cli.py
+OPT=build/opt python3 scripts/check_persistent.py [--mutants]   # --persistent: docs/design.md section 14
 OPT=build/opt python3 scripts/check_examples.py              # examples/train: fitting a model, one program for each use case
 OPT=build/opt python3 scripts/gen_stories.py --check        # docs/index.html and docs/stories.html are what opt prints now
 python3 scripts/check_landing.py                             # the pages follow cancho-www's landing pattern
