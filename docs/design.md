@@ -227,6 +227,26 @@ objective is a process start per evaluation (section 10), so they are not an ans
 **Open.** An objective computed by a cancho-gpu kernel: `cancho-gpu check --run` takes no input (its tensors are the interpreter's own
 made-up ones), so a kernel cannot be given parameters from a command line; docs/training.md of cancho-gpu records what it would take.
 
+## 13. The landing page and the stories (written before the generator; gates, then measured numbers)
+
+The page follows cancho-www's `docs/landing-pattern.md` (the ids `why`, `stories`, `how`, `watch`, `status`, `results`, `try`, `agent`, `docs` in that
+order, a Stories link in the header, the footer) and takes its structure from cancho-ml's page. Every figure and every printed run on it is **written by
+`scripts/gen_stories.py` from a real run of `opt`**, not typed: the region `<!--stories-->` of `docs/index.html`, the region `<!--run:watch-->`, and the whole of
+`docs/stories.html` are its output.
+
+**The stories** are invented and seeded (eight points, a 2-2-1 network, a ReLU, a noisy sample), say so, and each says what it shows and what it does not:
+a convex fit, XOR from eight starts, a noisy loss with SPSA, a loss with corners with Nelder-Mead, and a wrong gradient. One more is **not** run by the generator
+(it needs cancho-gpu's binary) and is marked as such with the figures of cancho-gpu's own check.
+
+| Gate | What it requires | Can it fail? |
+|---|---|---|
+| `python3 scripts/gen_stories.py --check` | the page, the stories page and the run replay equal what a fresh run of `build/opt` prints, rounded as the generator rounds them | yes: edit a number in either page, or change an example |
+| `python3 scripts/check_landing.py` | the ids of the pattern in order, a Stories link in the header, the stories region, one `<h1>`, a title and description inside the SEO limits, every in-page link names an id, every relative link is a file, no external request | yes |
+| the claims about scipy and Qiskit | **not** rerun by these gates: they are the runs of sections 2, 9 and 11, reported there, made by hand on the maintainer's machine; this container has no scipy | not applicable |
+
+**Choices.** The stories use Python objectives, as `examples/train/`; the numbers are rounded to six significant digits, so a different libm that changes
+the last bits does not fail `--check` (an iteration count that changes would, and would be a finding). The stories are checked on one platform, Linux x86-64.
+
 ## 7. Open
 
 * Levenberg-Marquardt and a residual protocol (section 1).

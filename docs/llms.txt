@@ -1,0 +1,22 @@
+# cancho-opt
+
+> Numerical optimisation as a command line, written in cancho: `opt minimize` runs Nelder-Mead, BFGS or SPSA over an objective that is a program (it reads a point on standard input and prints one number; for BFGS the value, then the gradient). The iterates are scipy's and Qiskit's, checked bit for bit or to 1e-9 by scripts that were run by hand and are reported in the README and docs/design.md. Answers are one JSON object; a refusal has a stable `opt.` rule, a repair and exit status 2.
+
+## Use it
+- Command: `opt minimize --x0 LIST [--method nelder-mead|bfgs|spsa] [--lower LIST --upper LIST] [--maxfev N] [--maxiter N] [--gtol X] -- PROGRAM ARG...` or `--objective sphere|rosenbrock|quadratic|absolute` for a built-in one.
+- Exit status: 0 on success; 1 when a fit does not converge (the result is still printed); 2 for a refusal, whose JSON is on standard error.
+- Build: the cancho compiler at the commit pinned in `cancho.toml`, then `cancho build --bin opt`.
+
+## Facts that matter when calling it
+- The program is started by the name given, **without searching PATH**: give an absolute path to the interpreter. Its environment is `PATH` and `HOME=/tmp` only.
+- At most 32 parameters and 10^7 evaluations. BFGS needs a gradient (a program that prints the value and then the gradient on one line; without one it is refused: `opt.no-gradient`) and takes no bounds. Nelder-Mead takes `--lower` and `--upper`. SPSA has no convergence test and runs its iterations.
+- `converged: true` means the gradient is small, not that the model is right: a network has local minima (stories.html, "XOR"). Check a gradient with `examples/train/gradcheck.py` before trusting BFGS.
+- Every evaluation costs a process start (1.2 ms measured on one machine, design.md section 10); for a cheap in-process objective scipy is far faster.
+- Not built: Levenberg-Marquardt, root, curve-fit, L-BFGS-B, a finite-difference gradient.
+- Authority: the binary starts the objective program and reads and writes standard input and output; it reads no file and has no network.
+
+## Docs
+- [Landing page](index.html): the promise, the stories, how it works, what was measured and by whom.
+- [Stories](stories.html): five small problems, each a real run written into the page by scripts/gen_stories.py.
+- [Design](https://github.com/alpibrusl/cancho-opt/blob/main/docs/design.md): every claim is measured (with its command), a choice, or open.
+- [Examples](https://github.com/alpibrusl/cancho-opt/tree/main/examples/train): one program for each use.

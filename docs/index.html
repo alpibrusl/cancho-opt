@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<!--
+  The landing page. Hand-written, except between the paired marker comments: the header and footer (`gen:nav`, `gen:footer`), the stories
+  and the replayed run, which scripts/gen_stories.py writes from real runs of opt (docs/design.md section 13). The long story page is stories.html.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cancho-opt: numerical optimisation as a command line</title>
+<meta name="description" content="Minimise anything a program can score: Nelder-Mead, BFGS and SPSA with scipy's iterates, a refusal that names its rule, and an objective that is any program.">
+<link rel="canonical" href="https://alpibrusl.github.io/cancho-opt/">
+<meta name="robots" content="index, follow">
+<meta property="og:site_name" content="cancho-opt">
+<meta property="og:type" content="website">
+<meta property="og:title" content="cancho-opt: numerical optimisation as a command line">
+<meta property="og:description" content="Minimise anything a program can score, with scipy's iterates and refusals that name their rule.">
+<meta property="og:url" content="https://alpibrusl.github.io/cancho-opt/">
+<meta name="color-scheme" content="light dark">
+<link rel="alternate" type="text/plain" href="llms.txt" title="cancho-opt, as an agent reads it">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<!-- gen:nav -->
+<header class="top"><div class="wrap">
+  <a class="brand" href="index.html">cancho-opt</a>
+  <nav aria-label="Site">
+    <a href="#how" class="opt">How it works</a><a href="stories.html">Stories</a><a href="#results" class="opt">Evidence</a><a href="#try">Try it</a><a href="#docs" class="opt">Docs</a><a href="https://github.com/alpibrusl/cancho-opt">GitHub</a>
+  </nav>
+</div></header>
+<!-- /gen:nav -->
+
+<main id="main">
+
+<div class="hero">
+  <div>
+    <p class="eyebrow">numerical optimisation · one command line</p>
+    <h1>Minimise anything a program can score.</h1>
+    <p class="sub"><code>opt</code> asks your program for the loss at a point and moves on. The iterates are scipy's, bit for bit where that was checked, and a refusal names its rule and the repair.</p>
+    <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn" href="stories.html">Read the stories</a></div>
+  </div>
+  <div class="machine">
+<svg viewBox="0 0 520 250" role="img" aria-labelledby="mc-t mc-d">
+<title id="mc-t">opt sends a point to your program and gets back a value, and a gradient for BFGS; it repeats until it stops</title>
+<desc id="mc-d">Two boxes. On the left, opt chooses a point. An arrow carries the point to the box on the right, your program, which can be written in any language. An arrow carries one number back, the loss, and for BFGS also the gradient. A loop arrow on opt says it repeats until it converges or refuses.</desc>
+<rect class="hot" x="20" y="70" width="150" height="110" rx="14"/><text x="95" y="108" text-anchor="middle">opt</text><text class="sm" x="95" y="132" text-anchor="middle">chooses the next point</text><text class="sm" x="95" y="152" text-anchor="middle">nelder-mead · bfgs · spsa</text>
+<rect class="box" x="350" y="70" width="150" height="110" rx="14"/><text x="425" y="108" text-anchor="middle">your program</text><text class="sm" x="425" y="132" text-anchor="middle">any language</text><text class="sm" x="425" y="152" text-anchor="middle">reads a point, prints a loss</text>
+<path class="ar" d="M172 105H348"/><path class="ar" d="M338 99l10 6-10 6"/><text class="sm" x="260" y="96" text-anchor="middle">point x</text>
+<path class="ar" d="M348 148H172"/><path class="ar" d="M182 142l-10 6 10 6"/><text class="sm" x="260" y="170" text-anchor="middle">loss (and gradient)</text>
+<path class="ar" d="M60 70C60 20 130 20 130 70"/><path class="ar" d="M124 58l6 12 6-12"/><text class="sm" x="95" y="30" text-anchor="middle">until it converges or refuses</text>
+</svg></div>
+</div>
+
+<section id="why">
+  <h2 class="sr" style="position:absolute;left:-9999px">What it gives you</h2>
+  <div class="cards">
+    <div class="card"><h3>scipy's iterates</h3><p>Nelder-Mead, BFGS and SPSA are ports checked against scipy and Qiskit: the same points, bit for bit for the first, with the last bits of BFGS depending on the BLAS (see the evidence).</p></div>
+    <div class="card"><h3>The objective is a program</h3><p>It reads the point on standard input and prints one number (BFGS: the value, then the gradient). No library, no binding, any language.</p></div>
+    <div class="card"><h3>Refusals are data</h3><p>An error is one JSON line with a stable <code>opt.</code> rule, an exit status and a repair. No payload is ever logged.</p></div>
+  </div>
+  <p class="note" style="max-width:48rem;margin:1.2rem auto 0">What the promise does <b>not</b> establish: that the minimum found is the global one (the XOR story), that your gradient is right (the gradient story), or that it is fast for a cheap objective (scipy in the same process is faster; every evaluation here costs a process start). The stories show each.</p>
+</section>
+
+<section id="stories">
+  <div class="center"><h2>What it did on small problems.</h2>
+  <p class="sub">Each is a real run, written into the page by a script, with what it shows and what it does not. The data are invented and seeded.</p></div>
+<!--stories-->
+  <div class="stories">
+    <article class="story"><h3><a href="stories.html#convex">Eight points no line separates</a></h3><p>BFGS converged in 15 evaluations, to within 7.6e-13 of an independent Newton solve.</p></article>
+    <article class="story"><h3><a href="stories.html#xor">XOR: converged is not solved</a></h3><p>BFGS reported converged from 8 of 8 starts; the network classifies all four points from 1.</p></article>
+    <article class="story"><h3><a href="stories.html#noisy">A loss you can only sample</a></h3><p>After 300 iterations the true loss went from 0.6931 to 0.376; the optimum is 0.2308.</p></article>
+    <article class="story"><h3><a href="stories.html#corners">A loss with corners</a></h3><p>Nelder-Mead reached a loss of 1.4e-13 in 2039 evaluations.</p></article>
+    <article class="story"><h3><a href="stories.html#gradient">Check the gradient before you trust BFGS</a></h3><p>A gradient missing its ridge term made BFGS stop with precision loss at 0.258, above the optimum 0.2308; a doubled bias gradient still converged.</p></article>
+    <article class="story"><h3><a href="stories.html#kernels">A model whose loss is computed by GPU kernels</a> <span class="tag">not run here</span></h3><p>12 evaluations, within 1.1e-5 of the normal-equations solution, 28 to 36 ms an evaluation, on cancho-gpu&#x27;s CPU interpreter.</p></article>
+  </div>
+<!--/stories-->
+  <p class="note" style="text-align:center"><a href="stories.html">All the stories, with their commands and numbers</a></p>
+</section>
+
+<section id="how">
+  <div class="center"><h2>How it works.</h2>
+  <p class="sub">One command: <code>opt minimize --x0 LIST [--method nelder-mead|bfgs|spsa] -- PROGRAM ARG...</code>. For each point <code>opt</code> starts the program, writes the point on its standard input as numbers separated by spaces, and reads the answer from its standard output.</p></div>
+  <div class="cols">
+    <div><h3>nelder-mead</h3><ul><li>needs only a value</li><li>handles corners and noise-free but non-smooth losses</li><li>bounds with <code>--lower</code> and <code>--upper</code></li></ul></div>
+    <div><h3>bfgs</h3><ul><li>needs the value, then the gradient, on one line</li><li>scipy's two line searches</li><li>no bounds</li></ul></div>
+    <div><h3>spsa</h3><ul><li>needs only a value, and tolerates noise</li><li>two evaluations an iteration whatever the dimension</li><li>no convergence test: it runs its iterations</li></ul></div>
+  </div>
+  <p class="note">At most 32 parameters and 10^7 evaluations. The program's environment is <code>PATH</code> and <code>HOME=/tmp</code> only, and <code>opt</code> starts it by the name given, without searching <code>PATH</code>: give an absolute path to the interpreter.</p>
+</section>
+
+<section id="watch">
+  <div class="center"><h2>A real run.</h2>
+  <p class="sub">A fit, then a refusal with its repair, as <code>opt</code> printed them (numbers rounded to six significant digits).</p></div>
+<!--run:watch-->
+<pre class="screen" aria-label="A recorded run of opt: a fit, then a refusal with its repair">$ opt minimize --method bfgs --x0 0,0,0 -- python3 examples/train/logistic.py
+{"method":"bfgs","x":[2.28644,2.41774,2.04962e-16],"fun":0.230847,"jac":[2.95476e-07,5.44138e-09,-1.38778e-17],"nfev":15,"njev":15,"nit":14,"converged":true,"message":"Optimization terminated successfully."}
+
+$ opt minimize --x0 1,1 -- nosuch-program
+{"error":"opt.objective-failed","message":"the objective program could not be started","repair":"check the path after `--`; its environment is PATH and HOME=/tmp only","point":[1.0,1.0]}
+# exit status 2</pre>
+<!--/run-->
+</section>
+
+<section id="status">
+  <h2>What exists, and what does not.</h2>
+  <div class="cols">
+    <div><h3>Built</h3><ul>
+      <li><code>minimize</code> with Nelder-Mead, BFGS and SPSA</li>
+      <li>four built-in objectives for trying it: sphere, Rosenbrock, quadratic, absolute</li>
+      <li>a program as the objective, and a refusal that names the point it failed at</li>
+      <li><a href="https://github.com/alpibrusl/cancho-opt/tree/main/examples/train">examples/train</a>: a convex fit, a small network, a noisy loss, a loss with corners and a gradient check</li>
+    </ul></div>
+    <div><h3>Not built</h3><ul>
+      <li>Levenberg-Marquardt and a residual protocol</li>
+      <li><code>root</code>, <code>curve-fit</code>, L-BFGS-B</li>
+      <li>a finite-difference gradient (BFGS without a gradient is refused: <code>opt.no-gradient</code>)</li>
+      <li>more than 32 parameters</li>
+    </ul></div>
+  </div>
+</section>
+
+<section id="results">
+  <div class="center"><h2>Measured, not promised.</h2>
+  <p class="sub">Every claim says what was run, where, and by whom. This repository has no CI yet: the scipy and Qiskit checks are runs made by hand on the maintainer's machine and reported in the README and <a href="https://github.com/alpibrusl/cancho-opt/blob/main/docs/design.md">design.md</a>; they were not rerun for this page (this container has no scipy).</p></div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>claim</th><th>what was run</th><th>where it is reported</th><th>what it does not cover</th></tr></thead>
+    <tbody>
+      <tr><td>Nelder-Mead is scipy's, step for step</td><td><code>scripts/check_scipy.py</code>: 65 runs, bit for bit; 9 deliberate mutants all killed</td><td>README, Status</td><td>scipy as it is, so nothing about other versions</td></tr>
+      <tr><td>BFGS is scipy's, with its two line searches</td><td><code>scripts/check_bfgs.py</code>: 565 runs, bit for bit against scipy with sequential sums; 13 mutants killed</td><td>README, Status; design.md section 9.2</td><td>against real BLAS the last bits differ, and about 1 run in 7 takes one or two more iterations</td></tr>
+      <tr><td>SPSA agrees with Qiskit's</td><td><code>scripts/check_spsa.py</code>: point for point to 1e-9; 10 mutants killed</td><td>README, Status; design.md section 11</td><td>that SPSA converges well on any problem</td></tr>
+      <tr><td>Faster than scipy where both did the same work</td><td><code>scripts/bench_scipy.py</code>: 2.8 to 12 times less time, built-in objectives, Intel Xeon 2.1 GHz, 4 cores, minimum of 7</td><td>design.md section 10</td><td>a program objective costs 1.2 ms of process start an evaluation; the advantage shrinks with size (1.4 times at 30 parameters)</td></tr>
+      <tr><td>The stories and examples are what <code>opt</code> prints</td><td><code>scripts/gen_stories.py --check</code> and <code>scripts/check_examples.py</code>, Linux x86-64</td><td>design.md sections 12 and 13</td><td>other platforms; a different libm may change last bits (rounded here)</td></tr>
+    </tbody>
+  </table></div>
+  <div class="cols">
+    <div><h3>Use it for</h3><ul>
+      <li>An objective that costs milliseconds or more (a simulator run, a model fit)</li>
+      <li>A result an agent can read: JSON, a rule, a repair</li>
+      <li>Reproducing scipy's iterates without Python</li>
+    </ul></div>
+    <div><h3>Not for</h3><ul>
+      <li>A cheap objective in a Python loop: scipy in the same process is far faster</li>
+      <li>More than 32 parameters, or training a large model</li>
+      <li>BFGS without a gradient, or with bounds</li>
+    </ul></div>
+  </div>
+</section>
+
+<section id="try">
+  <h2>Try it.</h2>
+  <p class="sub">You need the cancho compiler at the commit pinned in <code>cancho.toml</code>, and Rust to build it.</p>
+  <pre class="code">git clone https://github.com/alpibrusl/cancho
+git clone https://github.com/alpibrusl/cancho-opt &amp;&amp; cd cancho-opt
+REV=$(sed -n 's/^cancho = "\([0-9a-f]*\)".*/\1/p' cancho.toml)
+(cd ../cancho &amp;&amp; git checkout "$REV" &amp;&amp; cargo build --release -p cancho)
+../cancho/target/release/cancho build --bin opt
+build/opt minimize --x0 -1.2,1 --objective rosenbrock</pre>
+  <p class="note">Then <a href="https://github.com/alpibrusl/cancho-opt/tree/main/examples/train">examples/train</a> for a program as the objective. <code>OPT=build/opt python3 scripts/gen_stories.py --check</code> reruns what this page shows.</p>
+</section>
+
+<section id="agent">
+  <div class="bar"><h2 style="margin:0">For agents</h2><span class="note">the same facts as this page, as text</span><a href="llms.txt">llms.txt</a></div>
+  <p class="note">Answers are one JSON object on standard output. A refusal has an <code>error</code> rule (<code>opt.objective-failed</code>, <code>opt.no-gradient</code>, <code>opt.bad-number</code>, ...), a <code>repair</code>, and exit status 2; a fit that does not converge prints its result and exits 1. Match on the rule, not the message.</p>
+</section>
+
+<section id="docs">
+  <h2>Go deeper.</h2>
+  <ul class="links">
+    <li><a href="stories.html">Stories</a>: five small problems, each a real run</li>
+    <li><a href="https://github.com/alpibrusl/cancho-opt/blob/main/docs/design.md">Design</a>: what is claimed and how it is measured, section by section</li>
+    <li><a href="https://github.com/alpibrusl/cancho-opt/tree/main/examples/train">Examples</a>: one program for each use</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">Training with kernels</a>: cancho-gpu's view of using <code>opt</code> as the optimiser</li>
+    <li><a href="llms.txt">llms.txt</a>: this page as an agent reads it</li>
+  </ul>
+</section>
+
+</main>
+<!-- gen:footer -->
+<footer><div class="wrap">
+  <span>cancho-opt &middot; EUPL-1.2 &middot; written in <a href="https://github.com/alpibrusl/cancho">cancho</a></span>
+  <a href="https://github.com/alpibrusl/cancho-opt">GitHub</a><a href="llms.txt">llms.txt</a>
+  <span>the sibling tools: <a href="https://github.com/alpibrusl/cancho-stats">stats</a>, <a href="https://github.com/alpibrusl/cancho-table">table</a>, <a href="https://github.com/alpibrusl/cancho-ml">ml</a>, <a href="https://github.com/alpibrusl/cancho-gpu">gpu</a></span>
+</div></footer>
+<!-- /gen:footer -->
+</body>
+</html>
