@@ -30,10 +30,14 @@ OPT=build/opt python3 scripts/check_bfgs.py [--mutants] [--wide] [--blas]
 OPT=build/opt python3 scripts/check_spsa.py [--mutants]     # needs qiskit-algorithms
 OPT=build/opt python3 scripts/check_cli.py
 OPT=build/opt python3 scripts/check_examples.py              # examples/train: fitting a model, one program for each use case
+OPT=build/opt python3 scripts/gen_stories.py --check        # docs/index.html and docs/stories.html are what opt prints now
+python3 scripts/check_landing.py                             # the pages follow cancho-www's landing pattern
 OPT=build/opt python3 scripts/bench_scipy.py [--markdown]     # time against scipy: docs/design.md section 10
 ```
 
 **Training a model.** The objective of a fit is a program that prints the loss: [`examples/train/`](examples/train/README.md) has a convex fit with a gradient (BFGS), a small network by backpropagation (and why `converged` is not "solved"), a noisy loss (SPSA), a loss with corners (Nelder-Mead) and a gradient check; `docs/design.md` section 12.
+
+**The page and the stories.** [`docs/index.html`](docs/index.html) is the landing page and [`docs/stories.html`](docs/stories.html) holds five small problems (a convex fit, XOR from eight starts, a noisy loss, a loss with corners, a wrong gradient), each a real run written into the page by `scripts/gen_stories.py` with what it shows and what it does not; `docs/design.md` section 13. [`docs/llms.txt`](docs/llms.txt) is the page as an agent reads it.
 
 Authority: the binary starts the objective program (`exec`, and a clock for its timeout) and reads and writes standard input and
 output; it reads no file and has no network. Licence EUPL-1.2, copyright Alpibru S.L.
