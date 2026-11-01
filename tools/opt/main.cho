@@ -22,11 +22,13 @@ import opt.bfgs;
 import opt.lists;
 import opt.nm;
 import opt.objective;
+import opt.persist;
 import opt.spsa;
 import std.buffer;
 import std.bytes;
 import std.io;
 import std.json;
+import std.option;
 
 // A refusal: one JSON object on standard error, status 2. `point` (when not empty) is added as the point the objective failed at.
 fn emit[&h, &i, &p](heap: &!h Heap, io: &!i Io, rule: &static [byte], message: &static [byte], repair: &static [byte], point: &p [float], with_point: bool) -> [heap, err_write] int {
@@ -204,12 +206,24 @@ fn flag[&g](args: &g Args, stop: int, name: &static [byte]) -> [args] (bool, &st
     return (false, arg(args, 0)[0..0]);
 }
 
-// is `name` one of the flags `minimize` takes?
-fn known(name: &static [byte]) -> [] bool {
-    return bytes.equal(name, "--method") || bytes.equal(name, "--x0") || bytes.equal(name, "--lower") || bytes.equal(name, "--upper") || bytes.equal(name, "--step") || bytes.equal(name, "--xatol") || bytes.equal(name, "--fatol") || bytes.equal(name, "--maxfev") || bytes.equal(name, "--maxiter") || bytes.equal(name, "--gtol") || bytes.equal(name, "--objective") || bytes.equal(name, "--a") || bytes.equal(name, "--c") || bytes.equal(name, "--stability") || bytes.equal(name, "--seed");
+// is the value-less flag `name` among the arguments before the `--`?
+fn has_flag[&g](args: &g Args, stop: int, name: &static [byte]) -> [args] bool {
+    var k = 2;
+    while k < stop {
+        if bytes.equal(arg(args, k), name) {
+            return true;
+        }
+        k = k + 1;
+    }
+    return false;
 }
 
-fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, args: &g Args) -> [heap, io_write, err_write, exec(""), clock, poll, args] int {
+// is `name` one of the flags `minimize` takes?
+fn known(name: &static [byte]) -> [] bool {
+    return bytes.equal(name, "--method") || bytes.equal(name, "--x0") || bytes.equal(name, "--lower") || bytes.equal(name, "--upper") || bytes.equal(name, "--step") || bytes.equal(name, "--xatol") || bytes.equal(name, "--fatol") || bytes.equal(name, "--maxfev") || bytes.equal(name, "--maxiter") || bytes.equal(name, "--gtol") || bytes.equal(name, "--objective") || bytes.equal(name, "--a") || bytes.equal(name, "--c") || bytes.equal(name, "--stability") || bytes.equal(name, "--seed") || bytes.equal(name, "--timeout-ms");
+}
+
+fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, args: &g Args) -> [heap, io_write, err_write, exec(""), clock, poll, args, pipe_write, pipe_read, child_signal] int {
     var stop = arg_count(args);
     var k = 2;
     while k < arg_count(args) {
@@ -222,13 +236,17 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
     // every argument before `--` is a known flag followed by its value
     k = 2;
     while k < stop {
-        if !known(arg(args, k)) {
-            return refuse(heap, io, "opt.unknown-flag", "an argument is not a flag of `opt minimize`", "the flags are --x0 --objective --method --lower --upper --step --xatol --fatol --maxfev --maxiter --gtol --a --c --stability --seed, then `-- PROGRAM ARGS`");
+        if bytes.equal(arg(args, k), "--persistent") {
+            k = k + 1;
+        } else {
+            if !known(arg(args, k)) {
+                return refuse(heap, io, "opt.unknown-flag", "an argument is not a flag of `opt minimize`", "the flags are --x0 --objective --method --lower --upper --step --xatol --fatol --maxfev --maxiter --gtol --a --c --stability --seed --persistent --timeout-ms, then `-- PROGRAM ARGS`");
+            }
+            if k + 1 >= stop {
+                return refuse(heap, io, "opt.usage", "a flag has no value", "write each flag as `--name VALUE`");
+            }
+            k = k + 2;
         }
-        if k + 1 >= stop {
-            return refuse(heap, io, "opt.usage", "a flag has no value", "write each flag as `--name VALUE`");
-        }
-        k = k + 2;
     }
     let (has_method, method) = flag(args, stop, "--method");
     var is_bfgs = false;
@@ -297,6 +315,24 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
         kind = 0;
     } else {
         return refuse(heap, io, "opt.usage", "no objective", "give --objective sphere|rosenbrock|quadratic|absolute, or `-- PROGRAM [ARG...]`");
+    }
+    let persistent = has_flag(args, stop, "--persistent");
+    let (has_tm, tm_text) = flag(args, stop, "--timeout-ms");
+    var timeout = 3600000;
+    if persistent {
+        if kind != 0 {
+            return refuse(heap, io, "opt.usage", "--persistent needs a program after `--`", "a built-in objective has no process to keep (docs/design.md section 14)");
+        }
+        kind = objective.kind_persistent();
+    }
+    if has_tm {
+        if !persistent {
+            return refuse(heap, io, "opt.usage", "--timeout-ms is for --persistent", "give --persistent, or leave --timeout-ms out");
+        }
+        timeout = lists.natural(tm_text);
+        if timeout < 1 {
+            return refuse(heap, io, "opt.bad-number", "--timeout-ms is not a positive integer below 10^9", "e.g. 5000");
+        }
     }
     let x0 = box_slice(heap, n, 0.0);
     let lower = box_slice(heap, n, 0.0 - 1.0e300);
@@ -459,7 +495,7 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
         // the program: its name, and its arguments each followed by a NUL
         var program = arg(args, 0)[0..0];
         var argv = buffer.empty(heap, 16);
-        if kind == 0 {
+        if kind == 0 || kind == 5 {
             program = arg(args, stop + 1);
             var j = stop + 2;
             while j < arg_count(args) {
@@ -475,46 +511,68 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
         var njev = 0;
         var nit = 0;
         var code = 0;
-        borrow x0 as &xr in {
-            borrow lower as &lr in {
-                borrow upper as &ur in {
-                    borrow mut best as &!bw in {
-                        borrow argv as &ar in {
-                            var st = 0;
-                            if is_spsa {
-                                let (sp, fp, fep, itp) = spsa.minimize(heap, io, exec, clock, kind, program, buffer.bytes(ar), contents(xr), maxiter, gain, pert, big_a, seed, contents(bw));
-                                st = sp;
-                                fun = fp;
-                                nfev = fep;
-                                nit = itp;
-                            } else if is_bfgs {
-                                borrow mut jac as &!jw in {
-                                    let (sb, fb, feb, geb, itb) = bfgs.minimize(heap, io, exec, clock, kind, program, buffer.bytes(ar), contents(xr), gtol, maxiter, contents(bw), contents(jw));
-                                    st = sb;
-                                    fun = fb;
-                                    nfev = feb;
-                                    njev = geb;
-                                    nit = itb;
+        if status == 0 {
+            borrow x0 as &xr in {
+                borrow lower as &lr in {
+                    borrow upper as &ur in {
+                        borrow mut best as &!bw in {
+                            borrow argv as &ar in {
+                                var link = persist.start(exec, kind == 5, program, buffer.bytes(ar), timeout);
+                                var opened = true;
+                                if kind == 5 {
+                                    borrow link as &lo in {
+                                        opened = persist.is_open(lo);
+                                    }
                                 }
-                            } else {
-                                let (sn, fn2, fen, itn) = nm.minimize(heap, io, exec, clock, kind, program, buffer.bytes(ar), contents(xr), contents(lr), contents(ur), step, xatol, fatol, maxfev, maxiter, contents(bw));
-                                st = sn;
-                                fun = fn2;
-                                nfev = fen;
-                                nit = itn;
-                            }
-                            code = st;
-                            if st >= 10 {
-                                if st == 11 {
-                                    status = refuse_at(heap, io, "opt.objective-failed", "the objective program could not be started", "check the path after `--`; its environment is PATH and HOME=/tmp only", contents(bw));
-                                } else if st == 12 {
-                                    status = refuse_at(heap, io, "opt.objective-failed", "the objective program exited with a status other than 0 at the point shown", "run it by hand with that point on standard input", contents(bw));
-                                } else if st == 13 {
-                                    status = refuse_at(heap, io, "opt.objective-output", "the objective program did not print what the method needs at the point shown", "Nelder-Mead: one number and a newline; BFGS: the value and then the gradient, n + 1 numbers on one line", contents(bw));
-                                } else if st == 15 {
-                                    status = refuse_at(heap, io, "opt.no-gradient", "the objective has no gradient here", "rosenbrock needs at least 2 parameters", contents(bw));
+                                var st = 0;
+                                if !opened {
+                                    st = 11;
                                 } else {
-                                    status = refuse_at(heap, io, "opt.objective-not-finite", "the objective is NaN or infinite at the point shown", "make the objective finite there, or bound the search with --lower and --upper", contents(bw));
+                                    borrow mut link as &!lk in {
+                                        if is_spsa {
+                                            let (sp, fp, fep, itp) = spsa.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), maxiter, gain, pert, big_a, seed, contents(bw));
+                                            st = sp;
+                                            fun = fp;
+                                            nfev = fep;
+                                            nit = itp;
+                                        } else if is_bfgs {
+                                            borrow mut jac as &!jw in {
+                                                let (sb, fb, feb, geb, itb) = bfgs.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), gtol, maxiter, contents(bw), contents(jw));
+                                                st = sb;
+                                                fun = fb;
+                                                nfev = feb;
+                                                njev = geb;
+                                                nit = itb;
+                                            }
+                                        } else {
+                                            let (sn, fn2, fen, itn) = nm.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), contents(lr), contents(ur), step, xatol, fatol, maxfev, maxiter, contents(bw));
+                                            st = sn;
+                                            fun = fn2;
+                                            nfev = fen;
+                                            nit = itn;
+                                        }
+                                    }
+                                }
+                                code = st;
+                                if st >= 10 {
+                                    if st == 11 {
+                                        status = refuse_at(heap, io, "opt.objective-failed", "the objective program could not be started", "check the path after `--`; its environment is PATH and HOME=/tmp only", contents(bw));
+                                    } else if st == 12 {
+                                        status = refuse_at(heap, io, "opt.objective-failed", "the objective program exited with a status other than 0 at the point shown, or with --persistent stopped answering there (it ended, closed its output or was too slow)", "run it by hand with that point on standard input", contents(bw));
+                                    } else if st == 13 {
+                                        status = refuse_at(heap, io, "opt.objective-output", "the objective program did not print what the method needs at the point shown", "Nelder-Mead: one number and a newline; BFGS: the value and then the gradient, n + 1 numbers on one line", contents(bw));
+                                    } else if st == 15 {
+                                        status = refuse_at(heap, io, "opt.no-gradient", "the objective has no gradient here", "rosenbrock needs at least 2 parameters", contents(bw));
+                                    } else {
+                                        status = refuse_at(heap, io, "opt.objective-not-finite", "the objective is NaN or infinite at the point shown", "make the objective finite there, or bound the search with --lower and --upper", contents(bw));
+                                    }
+                                }
+                                match link {
+                                    option.Option::Some(l) => {
+                                        persist.close(clock, l);
+                                    }
+                                    option.Option::None => {
+                                    }
                                 }
                             }
                         }

@@ -14,6 +14,7 @@ Every claim below is **measured** (with the command that measures it), a **choic
 | `opt minimize --method nelder-mead` | built (this document) |
 | `opt minimize --method bfgs` | built (section 9) |
 | `opt minimize --method spsa` | built (section 11) |
+| `opt minimize --persistent` | built (section 14): the program is started once and answers a line for each line |
 | `opt minimize --method lm` (Levenberg-Marquardt, least squares) | **open**: needs an objective that returns residuals, a different protocol (section 4) |
 | `opt root`, `opt curve-fit`, gradient methods (BFGS, L-BFGS-B) | **open**, not needed by anything yet; they are written when a program needs them |
 
@@ -246,6 +247,53 @@ a convex fit, XOR from eight starts, a noisy loss with SPSA, a loss with corners
 
 **Choices.** The stories use Python objectives, as `examples/train/`; the numbers are rounded to six significant digits, so a different libm that changes
 the last bits does not fail `--check` (an iteration count that changes would, and would be a finding). The stories are checked on one platform, Linux x86-64.
+
+## 14. A persistent objective (`--persistent`)
+
+> **Order, honestly.** `CLAUDE.md` asks for the design before the code. The protocol below was first written in cancho-gpu's `docs/resident.md` section 4
+> (the reason for it); the code was then written in this change and this section, and `scripts/check_persistent.py`, were written to the code as it
+> stood, and the gate was run against deliberate bugs afterwards (below). The gates are still ones that fail: each of the eight mutants fails one.
+
+Section 4's objective is a program started for each point. That costs a process start per evaluation (section 10), and for a program that holds
+state worth keeping (a compiled kernel and data on a GPU, a simulator that has loaded its model) it repeats work whose result never changes.
+`opt minimize --persistent [--timeout-ms N] … -- PROGRAM ARG…` starts the program **once**, and for each point writes one line and reads one line.
+
+* **The protocol is section 4's, with a line instead of a process.** The request is the point, numbers in the shortest form that reads back,
+  separated by single spaces, one newline. The answer is one line: for Nelder-Mead and SPSA one number; for BFGS the value and then the gradient,
+  n + 1 numbers (the same parsing and the same finiteness check as the per-process program). The program's standard input closing is the end.
+* **Choices.** Its standard error is discarded (the per-process mode reads and drops it too, so nothing is lost, and a program that writes a
+  lot of it cannot block). The environment is `PATH` and `HOME=/tmp` as before. An answer is at most 65,536 bytes. **One answer per request:**
+  anything after the first newline is `opt.objective-output`, since a program that answers twice would be one answer behind from then on.
+  `--timeout-ms N` (default 3,600,000, the per-process mode's limit) bounds the wait for each answer. At the end `opt` closes the program's
+  input, waits **five seconds** for it to exit, and kills it if it has not; its exit status is not looked at, because every answer asked for has been read.
+* **No new rule tag.** The program ending, closing its output, being too slow, or not being startable is `opt.objective-failed` (with the point);
+  an answer that is not what the method needs, or has a second line, is `opt.objective-output`; an infinite one `opt.objective-not-finite`.
+  `--persistent` with a built-in objective, or `--timeout-ms` without `--persistent`, is `opt.usage`; a `--timeout-ms` that is not a positive
+  integer is `opt.bad-number`. (`NaN` is not a number to the reader, so it is `opt.objective-output`, as it is without `--persistent`.)
+* **Authority** is unchanged: `exec` and a clock, and the pipes of the child it starts. `opt` reads no file.
+* **Implementation.** `lib/persist/persist.cho` holds the child, its two pipes and an event poller in one value (`Link`), threaded through the
+  three methods as an `Option` that is empty for every other objective; `nm`, `bfgs` and `spsa` are otherwise unchanged. It builds with the
+  compiler written in cancho alone (`CANCHO_COMPILER=auto`, no fallback to the Rust one) once two constructs it has no code for are avoided: a
+  `match` on an enum whose arm assigns `Some(l)` to an outer variable, and an `Option` assigned over an `Option`.
+
+**Measured** (`OPT=build/opt python3 scripts/check_persistent.py`, cancho `a49ea779` built with `CANCHO_COMPILER=auto`, Apple M4 Max, Python 3.14.5
+as the program): 19 checks pass, and the 8 mutants (`--mutants`) are all killed. (1) Nelder-Mead (two cases, one with bounds), BFGS and SPSA print
+**byte for byte** what they print with a process for each point. (2) The program is started once for 159 evaluations, against 159 times.
+(3) A program sees its input close; one that ignores that is killed after 5.0 s and is gone. (4) Ten refusals, each with its tag, and no program
+left running after them. (5) **159 evaluations of Rosenbrock take 0.02 to 0.03 s through a persistent program and 2.7 to 2.9 s with a process each**
+(about 100 times; the per-process time is Python's start-up, 17 ms an evaluation, so with a program whose start is cheaper the ratio is smaller). The existing
+checks are unchanged: `check_cli.py` 56 ok, `check_examples.py` 10 ok, `check_scipy.py` and `check_bfgs.py` 65 runs each, bit for bit.
+
+**Mutants** (each fails the check): a second line not noticed; the timeout not applied (twice: in the link and in the flag); the program's
+input closed only after the wait; a program that ignores the end not killed; a closed output not an error; the last character of the answer
+dropped; `--timeout-ms 0` accepted. **A mutant that survived the first set** was the newline read as part of the answer: it is equivalent (the
+number reader ignores trailing white space), so it was replaced by the last character dropped. A mutant that did not build (the input
+never closed: the pipe is then not consumed, a linear-value error) was replaced by closing it late.
+
+**Open.** A program that writes its answer in several writes with pauses is waited for up to the timeout, not checked for progress. A request
+longer than the pipe holds (about 8 KiB on macOS, with 32 parameters a request is under 1 KiB) is a refusal and not a split write. The
+`NaN`/`inf` text a Python `print(float('nan'))` writes is `opt.objective-output`, not `opt.objective-not-finite`. Whether `opt` should hold
+several persistent programs (for a team of evaluations in parallel) is not asked by anything.
 
 ## 7. Open
 

@@ -3,6 +3,8 @@ edition 7;
 module opt.spsa;
 
 import opt.objective;
+import opt.persist;
+import std.option;
 import std.math;
 
 // SPSA (docs/design.md section 11): per iteration one random direction of +-1 entries, two evaluations of the objective, one step. The work space is one vector of floats:
@@ -24,7 +26,7 @@ fn draw[&r](rng: &!r [int]) -> [] float {
 
 // Run `maxiter` iterations from `x0` with gains a, c and stability constant `big_a`; the final point goes into `best`. Answers (status, value there, evaluations, iterations):
 // status 0 when it ran its iterations, 10 + c when the objective failed with code c (see `objective.value`), and `best` is then the point it failed at.
-pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], maxiter: int, gain: float, pert: float, big_a: float, seed: int, best: &!o [float]) -> [heap, exec(""), clock, poll] (int, float, int, int) {
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], maxiter: int, gain: float, pert: float, big_a: float, seed: int, best: &!o [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int) {
     let n = len(x0);
     let delta = n;
     let trial = delta + n;
@@ -61,7 +63,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o](heap: &!h Heap, io: &!i Io, exec
                     w[trial + k] = w[k] + ck * w[delta + k];
                     k = k + 1;
                 }
-                let (c1, fplus) = objective.value(heap, io, exec, clock, kind, exe, argv, w[trial..trial + n]);
+                let (c1, fplus) = objective.value(heap, io, exec, clock, link, kind, exe, argv, w[trial..trial + n]);
                 nfev = nfev + 1;
                 if c1 != 0 {
                     status = 10 + c1;
@@ -71,7 +73,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o](heap: &!h Heap, io: &!i Io, exec
                         w[trial + k] = w[k] - ck * w[delta + k];
                         k = k + 1;
                     }
-                    let (c2, fminus) = objective.value(heap, io, exec, clock, kind, exe, argv, w[trial..trial + n]);
+                    let (c2, fminus) = objective.value(heap, io, exec, clock, link, kind, exe, argv, w[trial..trial + n]);
                     nfev = nfev + 1;
                     if c2 != 0 {
                         status = 10 + c2;
@@ -88,7 +90,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o](heap: &!h Heap, io: &!i Io, exec
                 it = it + 1;
             }
             if status == 0 {
-                let (c3, f) = objective.value(heap, io, exec, clock, kind, exe, argv, w[0..n]);
+                let (c3, f) = objective.value(heap, io, exec, clock, link, kind, exe, argv, w[0..n]);
                 nfev = nfev + 1;
                 if c3 != 0 {
                     status = 10 + c3;
