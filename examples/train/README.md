@@ -73,7 +73,7 @@ smooth in the point, because the sample depends on the point.) `lr` is the numbe
 ## 4. A loss with corners, so no gradient: `nelder-mead`
 
 `relu_fit.py`: a two-unit ReLU network fitted to `|x|` on nine points, seven parameters, a value only. `max(0, z)` has no derivative at 0 and
-cancho-gpu has no ReLU kernel yet (`docs/training.md` there), so this is the case a gradient method cannot take.
+cancho-gpu now has `relu` and `step` (a ReLU network trains on its GPU session, `docs/resident.md` section 12.3 there), but this program is a value-only objective: a pure-Python loss with no gradient printed, the case Nelder-Mead takes.
 
 ```
 $ build/opt minimize --x0 0.5,0.1,-0.5,0.1,0.8,0.8,0 --maxfev 4000 -- $PY examples/train/relu_fit.py
