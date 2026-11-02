@@ -22,7 +22,7 @@ import qiskit_algorithms.optimizers.spsa as spsa_module
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 OPT = os.environ.get("OPT", os.path.join(ROOT, "build", "opt"))
-SRC = ["lib/nm/objective.cho", "lib/nm/lists.cho", "lib/nm/nm.cho", "lib/bfgs/dcsrch.cho", "lib/bfgs/bfgs.cho", "lib/spsa/spsa.cho", "tools/opt/main.cho"]
+SRC = ["lib/nm/objective.cho", "lib/nm/lists.cho", "lib/nm/nm.cho", "lib/bfgs/dcsrch.cho", "lib/bfgs/bfgs.cho", "lib/spsa/spsa.cho", "lib/persist/persist.cho", "tools/opt/main.cho"]
 M = (1 << 64) - 1
 
 FUNCTIONS = {

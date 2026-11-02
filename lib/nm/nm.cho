@@ -3,6 +3,8 @@ edition 7;
 module opt.nm;
 
 import opt.objective;
+import opt.persist;
+import std.option;
 
 // Nelder-Mead as `scipy.optimize.minimize(method="Nelder-Mead")` does it (docs/design.md section 2): the same operations on the same doubles in the
 // same order. The work space is one vector of floats:
@@ -74,18 +76,18 @@ fn stop_of(code: int) -> [] int {
 }
 
 // the value at the row `at`, remembering the point in `last` so that a failure can name it (code 90 without evaluating when `spent` has reached `maxfev`)
-fn try_at[&h, &i, &x, &c, &p, &a, &w](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], ws: &!w [float], at: int, n: int, last: int, spent: int, maxfev: int) -> [heap, exec(""), clock, poll] (int, float) {
+fn try_at[&h, &i, &x, &c, &p, &a, &w, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], ws: &!w [float], at: int, n: int, last: int, spent: int, maxfev: int) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float) {
     if spent >= maxfev {
         return (90, 0.0);
     }
     copy_row(ws, at, last, n);
-    return objective.value(heap, io, exec, clock, kind, exe, argv, ws[at..at + n]);
+    return objective.value(heap, io, exec, clock, link, kind, exe, argv, ws[at..at + n]);
 }
 
 // Minimise from `x0` inside [lower, upper]; the minimiser goes into `best`. A step of 0 is scipy's initial simplex, anything else puts vertex k at
 // x0 + step e_k. `nfev` never exceeds `maxfev`: the evaluation that would is not made and the iteration is abandoned where it stands, as scipy does. Answers (status, value, evaluations, iterations); status 0 converged, 1 `maxfev` reached, 2 `maxiter` reached, 10 + c when the
 // objective failed with code c (see `objective.value`), and `best` is then the point it failed at.
-pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], lower: &l [float], upper: &u [float], step: float, xatol: float, fatol: float, maxfev: int, maxiter: int, best: &!o [float]) -> [heap, exec(""), clock, poll] (int, float, int, int) {
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], lower: &l [float], upper: &u [float], step: float, xatol: float, fatol: float, maxfev: int, maxiter: int, best: &!o [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int) {
     let n = len(x0);
     let m = n + 1;
     let fs = m * n;
@@ -148,7 +150,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o](heap: &!h Heap, io: &!i 
         }
         k = 0;
         while k < m && status == 0 {
-            let (code, v) = try_at(heap, io, exec, clock, kind, exe, argv, w, k * n, n, last, nfev, maxfev);
+            let (code, v) = try_at(heap, io, exec, clock, link, kind, exe, argv, w, k * n, n, last, nfev, maxfev);
             if code != 90 {
                 nfev = nfev + 1;
             }
@@ -211,7 +213,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o](heap: &!h Heap, io: &!i 
                         j = j + 1;
                     }
                     clip(w, xr, n, lo, hi);
-                    let (c1, fxr) = try_at(heap, io, exec, clock, kind, exe, argv, w, xr, n, last, nfev, maxfev);
+                    let (c1, fxr) = try_at(heap, io, exec, clock, link, kind, exe, argv, w, xr, n, last, nfev, maxfev);
                     if c1 != 90 {
                         nfev = nfev + 1;
                     }
@@ -225,7 +227,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o](heap: &!h Heap, io: &!i 
                             j = j + 1;
                         }
                         clip(w, xe, n, lo, hi);
-                        let (c2, fxe) = try_at(heap, io, exec, clock, kind, exe, argv, w, xe, n, last, nfev, maxfev);
+                        let (c2, fxe) = try_at(heap, io, exec, clock, link, kind, exe, argv, w, xe, n, last, nfev, maxfev);
                         if c2 != 90 {
                             nfev = nfev + 1;
                         }
@@ -249,7 +251,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o](heap: &!h Heap, io: &!i 
                             j = j + 1;
                         }
                         clip(w, xe, n, lo, hi);
-                        let (c3, fxc) = try_at(heap, io, exec, clock, kind, exe, argv, w, xe, n, last, nfev, maxfev);
+                        let (c3, fxc) = try_at(heap, io, exec, clock, link, kind, exe, argv, w, xe, n, last, nfev, maxfev);
                         if c3 != 90 {
                             nfev = nfev + 1;
                         }
@@ -269,7 +271,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o](heap: &!h Heap, io: &!i 
                             j = j + 1;
                         }
                         clip(w, xe, n, lo, hi);
-                        let (c4, fxcc) = try_at(heap, io, exec, clock, kind, exe, argv, w, xe, n, last, nfev, maxfev);
+                        let (c4, fxcc) = try_at(heap, io, exec, clock, link, kind, exe, argv, w, xe, n, last, nfev, maxfev);
                         if c4 != 90 {
                             nfev = nfev + 1;
                         }
@@ -291,7 +293,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o](heap: &!h Heap, io: &!i 
                                 j = j + 1;
                             }
                             clip(w, r * n, n, lo, hi);
-                            let (c5, fv) = try_at(heap, io, exec, clock, kind, exe, argv, w, r * n, n, last, nfev, maxfev);
+                            let (c5, fv) = try_at(heap, io, exec, clock, link, kind, exe, argv, w, r * n, n, last, nfev, maxfev);
                             if c5 != 90 {
                                 nfev = nfev + 1;
                             }

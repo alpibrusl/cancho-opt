@@ -67,7 +67,7 @@ def sequential(on):
     np.linalg.norm = _seqnorm if on else _NORM
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-SRC = ["lib/nm/objective.cho", "lib/nm/lists.cho", "lib/nm/nm.cho", "lib/bfgs/dcsrch.cho", "lib/bfgs/bfgs.cho", "tools/opt/main.cho"]
+SRC = ["lib/nm/objective.cho", "lib/nm/lists.cho", "lib/nm/nm.cho", "lib/bfgs/dcsrch.cho", "lib/bfgs/bfgs.cho", "lib/persist/persist.cho", "tools/opt/main.cho"]
 
 
 def sphere(x):
