@@ -21,13 +21,14 @@ standard output. That is how cancho-quantum's `hw fit` minimises the misfit of a
 **Status.** `minimize --method nelder-mead`, which is `scipy.optimize.minimize(method="Nelder-Mead")` step for step: the same iterates, bit for bit
 (`scripts/check_scipy.py`, 65 runs, 9 deliberate mutants all killed); and `--method bfgs` (with a gradient: a built-in objective's, or a program that prints the value and then the gradient), scipy's BFGS with its two line
 searches (MINPACK's `dcsrch`, then `zoom`), bit for bit against scipy with its BLAS dot products replaced by sequential sums (`scripts/check_bfgs.py`: 565 runs, 13 mutants killed; against real BLAS the last bits differ and about 1 run
-in 7 takes one or two more iterations: `docs/design.md` section 9); and `--method spsa` for noisy objectives (two evaluations per iteration whatever the dimension, no gradient; checked against Qiskit's SPSA, point for point to 1e-9, `scripts/check_spsa.py`, 10 mutants killed; `docs/design.md` section 11). Levenberg-Marquardt and a finite-difference gradient are not built; `docs/design.md` says what is claimed, how it is measured and what is open.
+in 7 takes one or two more iterations: `docs/design.md` section 9); and `--method spsa` for noisy objectives (two evaluations per iteration whatever the dimension, no gradient; checked against Qiskit's SPSA, point for point to 1e-9, `scripts/check_spsa.py`, 10 mutants killed; `docs/design.md` section 11). and `--method adam` for objectives with a gradient that is noisy (one evaluation per iteration; bit for bit against a Python float64 implementation of the formulas and within 1e-15 of `torch.optim.Adam`, `scripts/check_adam.py`, 9 mutants killed; `docs/design.md` section 15). Levenberg-Marquardt and a finite-difference gradient are not built; `docs/design.md` says what is claimed, how it is measured and what is open.
 
 ```
-cancho build --bin opt            # or: cancho build lib/nm/objective.cho lib/nm/lists.cho lib/nm/nm.cho lib/bfgs/dcsrch.cho lib/bfgs/bfgs.cho lib/spsa/spsa.cho lib/persist/persist.cho tools/opt/main.cho --std -o build/opt
+cancho build --bin opt            # or: cancho build lib/nm/objective.cho lib/nm/lists.cho lib/nm/nm.cho lib/bfgs/dcsrch.cho lib/bfgs/bfgs.cho lib/spsa/spsa.cho lib/adam/adam.cho lib/persist/persist.cho tools/opt/main.cho --std -o build/opt
 OPT=build/opt python3 scripts/check_scipy.py [--mutants]    # needs scipy; --mutants needs CANCHO=the compiler
 OPT=build/opt python3 scripts/check_bfgs.py [--mutants] [--wide] [--blas]
 OPT=build/opt python3 scripts/check_spsa.py [--mutants]     # needs qiskit-algorithms
+OPT=build/opt python3 scripts/check_adam.py [--mutants]     # needs torch for the comparison with torch.optim.Adam
 OPT=build/opt python3 scripts/check_cli.py
 OPT=build/opt python3 scripts/check_persistent.py [--mutants]   # --persistent: docs/design.md section 14
 OPT=build/opt python3 scripts/check_examples.py              # examples/train: fitting a model, one program for each use case

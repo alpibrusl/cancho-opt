@@ -1,7 +1,7 @@
 # Training a model with `opt`
 
 Fitting a model is minimising a loss over its parameters; the objective of `opt` is a program that is given the parameters and prints the loss.
-One example for each way that is used. `scripts/check_examples.py` runs every one and fails if what is claimed here stops being true
+One example for each way that is used (BFGS, SPSA, Adam, Nelder-Mead). `scripts/check_examples.py` runs every one and fails if what is claimed here stops being true
 (`docs/design.md` section 12). Python 3, standard library only.
 
 Two things to know before copying a command:
@@ -48,11 +48,27 @@ number is printed. SPSA needs two evaluations an iteration whatever the dimensio
 
 ```
 $ build/opt minimize --method spsa --x0 0,0,0 --maxiter 300 -- $PY examples/train/noisy_logistic.py
-{"method":"spsa","x":[0.8644191200576172,0.17608273243147496,-0.14011537282043465],"fun":0.591314864244987,"nfev":601,"nit":300,"completed":true,"message":"Ran all iterations; SPSA has no convergence test."}
+{"method":"spsa","x":[0.7795486975162733,0.23348086897940135,-0.07303058942143852],"fun":0.347725572529023,"nfev":601,"nit":300,"completed":true,"message":"Ran all iterations; SPSA has no convergence test."}
 ```
 
-The `fun` printed is one noisy sample. The *true* loss at the answer is 0.3760, down from 0.6931 at the start, with the optimum at 0.2308: SPSA
-moved the right way and had not arrived after 300 iterations. That is all the gate claims.
+The `fun` printed is one noisy sample. The *true* loss at the answer is 0.3870, down from 0.6931 at the start, with the optimum at 0.2308: SPSA
+moved the right way and had not arrived after 300 iterations. That is all the gate claims. (An earlier version of this file showed x = 0.864…, true loss 0.3760: the
+sample is chosen from a hash of the point's text, so a one-bit difference in an iterate, from another compiler's `pow`, draws other samples and another run. The numbers above are from the compiler of the
+revision in `docs/design.md` section 15's measurement.)
+
+## 3b. Noise, with the gradient of the sample: `adam`
+
+`noisy_logistic_grad.py` prints the loss and the gradient of the same five drawn points. Adam takes one evaluation an iteration and the gradient of whatever sample it is given
+(`docs/design.md` section 15):
+
+```
+$ build/opt minimize --method adam --x0 0,0,0 --lr 0.05 --maxiter 300 -- $PY examples/train/noisy_logistic_grad.py
+{"method":"adam","x":[2.266734150702144,2.5654627277576356,0.15348962273519792],"fun":0.30343823676130455,"jac":[0.02316369002760103,-0.018230435320171573,-0.0083879225580079],"nfev":301,"njev":301,"nit":300,"completed":true,"message":"Ran all iterations; Adam has no convergence test."}
+```
+
+The true loss at the answer is 0.2322 (the optimum is 0.2308) with 301 evaluations, where SPSA's is 0.3870 with 601: the gradient of a sample is worth more than two
+evaluations of its loss. The gate requires within 0.01 of the optimum and beating SPSA with half the evaluations. (`gradcheck.py` does not apply to this program: its loss is not
+smooth in the point, because the sample depends on the point.) `lr` is the number to tune: 0.05 gives 0.2322, 0.1 gives 0.2419 and 0.3 gives 0.2449 here.
 
 ## 4. A loss with corners, so no gradient: `nelder-mead`
 

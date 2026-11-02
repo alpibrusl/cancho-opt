@@ -22,8 +22,7 @@ import time
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 OPT = os.environ.get("OPT", os.path.join(ROOT, "build", "opt"))
 PY = sys.executable
-SRC = ["lib/nm/objective.cho", "lib/nm/lists.cho", "lib/nm/nm.cho", "lib/bfgs/dcsrch.cho", "lib/bfgs/bfgs.cho", "lib/spsa/spsa.cho", "lib/persist/persist.cho",
-       "tools/opt/main.cho"]
+SRC = ["lib/nm/objective.cho", "lib/nm/lists.cho", "lib/nm/nm.cho", "lib/bfgs/dcsrch.cho", "lib/bfgs/bfgs.cho", "lib/spsa/spsa.cho", "lib/adam/adam.cho", "lib/persist/persist.cho", "tools/opt/main.cho"]
 
 # One program, two ways to run it: `MODE once` reads a point and answers; `MODE loop` answers a line for each line until its input closes.
 # argv: mode, behaviour, log file, [after]. Behaviours: ok, grad (value then gradient: Rosenbrock), exit-after N, short (value only, for BFGS),
