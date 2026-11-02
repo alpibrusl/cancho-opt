@@ -61,6 +61,12 @@ r = opt("--method", "spsa", "--x0", "0,0,0", "--maxiter", "300", "--", PY, os.pa
 true_start, true_end = logistic.loss_grad(0, 0, 0)[0], logistic.loss_grad(*r["x"])[0]
 check("spsa lowers the true loss", true_end < true_start - 0.05, f"{true_start:.4f} -> {true_end:.4f} (the optimum is {reference.newton_logistic():.4f})")
 
+# 3b. noise, with the gradient of the sample: Adam
+r_adam = opt("--method", "adam", "--x0", "0,0,0", "--lr", "0.05", "--maxiter", "300", "--", PY, os.path.join(EX, "noisy_logistic_grad.py"))
+adam_end = logistic.loss_grad(*r_adam["x"])[0]
+check("adam gets within 0.01 of the optimal true loss with 301 evaluations", adam_end < reference.newton_logistic() + 0.01 and r_adam["nfev"] == 301, f"{adam_end:.4f} (the optimum is {reference.newton_logistic():.4f}), nfev {r_adam['nfev']}")
+check("adam beats spsa's true loss with half the evaluations", adam_end < true_end and r_adam["nfev"] * 2 <= r["nfev"] + 1, f"{adam_end:.4f} against {true_end:.4f}")
+
 # 4. a corner
 r = opt("--x0", "0.5,0.1,-0.5,0.1,0.8,0.8,0", "--maxfev", "4000", "--", PY, os.path.join(EX, "relu_fit.py"))
 check("nelder-mead fits |x| with a ReLU network", r["converged"] and r["fun"] < 1e-8, f"loss {r['fun']:.2e}, nfev {r['nfev']}")

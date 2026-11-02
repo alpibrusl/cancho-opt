@@ -95,6 +95,24 @@ else:
     print("FAIL SPSA seeds")
     bad += 1
 
+# Adam
+A = "minimize", "--method", "adam", *X0, "--objective", "sphere"
+for flag, value in (("--xatol", "1e-6"), ("--maxfev", "50"), ("--gtol", "1e-6"), ("--lower", "0,0"), ("--a", "0.1"), ("--seed", "3")):
+    expect_refusal("opt.flag-not-for-method", *A, flag, value)
+for method in ("nelder-mead", "bfgs", "spsa"):
+    expect_refusal("opt.flag-not-for-method", "minimize", "--method", method, *X0, "--objective", "sphere", "--lr", "0.1")
+expect_refusal("opt.flag-not-for-method", "minimize", *X0, "--objective", "sphere", "--beta1", "0.5")
+expect_refusal("opt.no-gradient", "minimize", "--method", "adam", *X0, "--objective", "absolute")
+for flag, value in (("--lr", "0"), ("--lr", "-1"), ("--lr", "x"), ("--beta1", "1"), ("--beta1", "-0.1"), ("--beta2", "1.5"), ("--eps", "0"), ("--maxiter", "0")):
+    expect_refusal("opt.bad-number", *A, flag, value)
+r = opt(*A, "--maxiter", "7")
+j = json.loads(r.stdout) if r.returncode == 0 else {}
+if j.get("completed") is True and "converged" not in j and j.get("nit") == 7 and j.get("nfev") == 8 and j.get("njev") == 8 and j.get("method") == "adam" and len(j.get("jac", [])) == 2:
+    print("ok   Adam: status 0, completed true, nit 7, nfev nit + 1, the gradient printed")
+else:
+    print("FAIL Adam result:", r.returncode, r.stdout[:200])
+    bad += 1
+
 # a program objective computes the built-in function
 tmp = tempfile.mkdtemp()
 prog = os.path.join(tmp, "obj.py")

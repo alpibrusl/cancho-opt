@@ -90,7 +90,7 @@ evaluations.
 |---|---|
 | `opt.usage` | no or unknown command, a flag without a value, no `--x0`, no objective or two |
 | `opt.unknown-flag` | a flag `minimize` does not take |
-| `opt.unknown-method` | `--method` other than `nelder-mead` |
+| `opt.unknown-method` | `--method` other than `nelder-mead`, `bfgs`, `spsa` and `adam` |
 | `opt.bad-number` | `--x0`, `--lower`, `--upper`, `--step`, `--xatol`, `--fatol`, `--maxfev` or `--maxiter` is not a number of the right kind |
 | `opt.bounds-length` | `--lower` or `--upper` does not have as many numbers as `--x0` |
 | `opt.bounds-order` | a lower bound above its upper bound |
@@ -294,6 +294,40 @@ never closed: the pipe is then not consumed, a linear-value error) was replaced 
 longer than the pipe holds (about 8 KiB on macOS, with 32 parameters a request is under 1 KiB) is a refusal and not a split write. The
 `NaN`/`inf` text a Python `print(float('nan'))` writes is `opt.objective-output`, not `opt.objective-not-finite`. Whether `opt` should hold
 several persistent programs (for a team of evaluations in parallel) is not asked by anything.
+
+## 15. Adam (`--method adam`)
+
+> **Order.** This section is written before `lib/adam/adam.cho`, `scripts/check_adam.py` and the changes to `tools/opt/main.cho`. Where it says "measured" the number is added after the code runs, and a claim found false is
+> corrected here.
+
+Adam (Kingma and Ba 2015) is the optimiser that models are trained with when the loss is a sum over a sample and each evaluation sees a different sample, as the noisy logistic loss of `examples/train/noisy_logistic.py` does: it needs the
+gradient of that sample (BFGS's line search does not survive the noise; SPSA throws the gradient away and takes two evaluations an iteration whatever the dimension). One evaluation per iteration, 3 n numbers of state.
+
+**The method.** `--method adam --x0 LIST (--objective sphere|rosenbrock|quadratic | -- PROGRAM…) [--maxiter N] [--lr A] [--beta1 B] [--beta2 B] [--eps E]`. The objective is BFGS's (section 9): the value and then the gradient. Defaults: 100 iterations,
+`lr` 0.001, `beta1` 0.9, `beta2` 0.999, `eps` 1e-8 (the paper's, and PyTorch's). Iteration t = 1, 2, …: evaluate the gradient g at x; then, elementwise,
+
+```
+m  = m + (g - m) (1 - beta1)            (when 1 - beta1 >= 0.5: g - (g - m) beta1)
+v  = v beta2 + ((1 - beta2) g) g
+x  = x - (lr / (1 - beta1^t)) m / (sqrt(v) / sqrt(1 - beta2^t) + eps)
+```
+
+which is the order of operations of `torch.optim.Adam` (single tensor, no weight decay, no amsgrad) so that the two can be compared. **One difference, chosen**: `beta^t` is the running product `b = b beta` (one multiplication an iteration), not
+`pow`, which `std.math` and the C library may round differently in the last place (section 11 found that for SPSA); the product is the same on every platform. A final evaluation at the last x gives `fun` and `jac`; `nfev` = `njev` = `nit + 1`.
+**There is no convergence test** (as SPSA): the result says `"completed": true`, exit status 0. The flags of the other methods are `opt.flag-not-for-method`, as Adam's are for them; `absolute` is `opt.no-gradient`; a non-positive `--lr`,
+`--eps`, or a `--beta` outside [0, 1) is `opt.bad-number`. At most 32 parameters, like every method (section 5).
+
+**What is claimed, and how it is measured (`scripts/check_adam.py`).** (1) **Bit for bit** against a Python float64 implementation of the formulas above, with the same running products, on the three built-in objectives and on a program objective, in 1 to 8
+dimensions, from several starts, with the defaults and with other `lr`, `beta`, `eps` (both branches of the first line), for 1 to 300 iterations: the same `x`, `fun` and `jac` (printed in the shortest form that reads back, so equal text is equal bits).
+(2) **Against `torch.optim.Adam`** in float64 on the same problems: the same `x` to a relative 1e-9 after 100 iterations (not bit for bit: the vectorised kernels of PyTorch, and its use of `pow`, differ from the formulas in the last places; the chaos of Rosenbrock
+would magnify that over many iterations, so the test uses the smoother objectives for 100 and Rosenbrock for 20). (3) The mutants listed in the script are all killed. **Measured** (`OPT=build/opt python3 scripts/check_adam.py --mutants`, cancho `a49ea779` built with `CANCHO_COMPILER=auto`, Apple M4 Max, Python 3.14.5, torch 2.12): **11 of 11 runs equal the reference bit for bit** (`x`, `fun`, `jac`,
+`nit`, `nfev`), `--persistent` gives byte for byte the result of a process for each point, **the worst relative difference from `torch.optim.Adam` is 1.0e-15** (sphere, quadratic and logistic after 100 iterations, Rosenbrock after 20), and all **9 mutants are killed**
+(the first-moment weight, a missing factor of g, no bias correction of either moment, the root left out, no eps, the sign, the other branch of the first moment, the running product of beta2, the final evaluation). The existing checks are unchanged: `check_cli.py`
+(now with 20 Adam cases), `check_examples.py` (with two for Adam), `check_bfgs.py` and `check_scipy.py` 65 runs each bit for bit; `check_spsa.py` needs qiskit-algorithms, which this machine does not have. **On a noisy loss** (`examples/train/README.md` 3b) Adam reaches a true
+loss of 0.2322 (optimum 0.2308) in 301 evaluations where SPSA, with 601, is at 0.3870.
+
+**Not claimed:** that Adam converges on any problem, a good default for `lr`
+(it is the number to tune), weight decay, AMSGrad, a learning-rate schedule, gradient clipping.
 
 ## 7. Open
 

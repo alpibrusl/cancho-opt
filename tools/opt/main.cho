@@ -3,8 +3,10 @@ edition 7;
 // `opt` — numerical optimisation as a command line (docs/design.md).
 //
 //     opt minimize --x0 LIST (--objective sphere|rosenbrock|quadratic|absolute | -- PROGRAM [ARG...])
-//                  [--method nelder-mead|bfgs|spsa] [--lower LIST] [--upper LIST] [--step S] [--xatol X] [--fatol F] [--maxfev N] [--maxiter N] [--gtol G]
-//                  [--a A] [--c C] [--stability S] [--seed K]
+//                  [--method nelder-mead|bfgs|spsa|adam] [--lower LIST] [--upper LIST] [--step S] [--xatol X] [--fatol F] [--maxfev N] [--maxiter N] [--gtol G]
+//                  [--a A] [--c C] [--stability S] [--seed K] [--lr A] [--beta1 B] [--beta2 B] [--eps E]
+//
+// Adam (--method adam) takes --maxiter --lr --beta1 --beta2 --eps and a gradient objective like BFGS's; like SPSA it has no convergence test (docs/design.md section 15).
 //
 // SPSA takes --maxiter --a --c --stability --seed and a value-only objective, like Nelder-Mead (docs/design.md section 11); it has no convergence test, so its result says `"completed": true` and the exit status is 0.
 // Nelder-Mead (the default) takes --lower --upper --step --xatol --fatol --maxfev --maxiter; BFGS takes --gtol --maxiter and needs a gradient: a built-in objective has one (not `absolute`), a program prints the value
@@ -18,6 +20,7 @@ edition 7;
 // standard output and, on standard error, one JSON object `{"error": "opt.<rule>", "message": "...", "repair": "..."}`; the rule tags are
 // listed in docs/design.md section 8. Reference: scipy.optimize.minimize, which `scripts/check_scipy.py` compares this with bit for bit.
 
+import opt.adam;
 import opt.bfgs;
 import opt.lists;
 import opt.nm;
@@ -191,6 +194,48 @@ fn print_spsa[&h, &i, &b](heap: &!h Heap, io: &!i Io, best: &b [float], fun: flo
     return 0;
 }
 
+fn print_adam[&h, &i, &b, &j](heap: &!h Heap, io: &!i Io, best: &b [float], jac: &j [float], fun: float, nfev: int, nit: int) -> [heap, io_write] int {
+    var w = json.writer(heap, 256);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "method");
+    w = json.put_string(heap, w, "adam");
+    w = json.put_key(heap, w, "x");
+    w = json.begin_array(heap, w);
+    var k = 0;
+    while k < len(best) {
+        w = json.put_float(heap, w, best[k]);
+        k = k + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.put_key(heap, w, "fun");
+    w = json.put_float(heap, w, fun);
+    w = json.put_key(heap, w, "jac");
+    w = json.begin_array(heap, w);
+    k = 0;
+    while k < len(jac) {
+        w = json.put_float(heap, w, jac[k]);
+        k = k + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.put_key(heap, w, "nfev");
+    w = json.put_int(heap, w, nfev);
+    w = json.put_key(heap, w, "njev");
+    w = json.put_int(heap, w, nfev);
+    w = json.put_key(heap, w, "nit");
+    w = json.put_int(heap, w, nit);
+    w = json.put_key(heap, w, "completed");
+    w = json.put_bool(heap, w, true);
+    w = json.put_key(heap, w, "message");
+    w = json.put_string(heap, w, "Ran all iterations; Adam has no convergence test.");
+    w = json.end_object(heap, w);
+    let out = buffer.push(heap, json.finish(w), byte_of(10));
+    borrow out as &or in {
+        buffer.write(io, or);
+    }
+    buffer.drop(heap, out);
+    return 0;
+}
+
 // The value of `--name V` among the arguments before the `--` (index `stop`); `found` is false when it is not there.
 fn flag[&g](args: &g Args, stop: int, name: &static [byte]) -> [args] (bool, &static [byte]) {
     var k = 2;
@@ -220,7 +265,7 @@ fn has_flag[&g](args: &g Args, stop: int, name: &static [byte]) -> [args] bool {
 
 // is `name` one of the flags `minimize` takes?
 fn known(name: &static [byte]) -> [] bool {
-    return bytes.equal(name, "--method") || bytes.equal(name, "--x0") || bytes.equal(name, "--lower") || bytes.equal(name, "--upper") || bytes.equal(name, "--step") || bytes.equal(name, "--xatol") || bytes.equal(name, "--fatol") || bytes.equal(name, "--maxfev") || bytes.equal(name, "--maxiter") || bytes.equal(name, "--gtol") || bytes.equal(name, "--objective") || bytes.equal(name, "--a") || bytes.equal(name, "--c") || bytes.equal(name, "--stability") || bytes.equal(name, "--seed") || bytes.equal(name, "--timeout-ms");
+    return bytes.equal(name, "--method") || bytes.equal(name, "--x0") || bytes.equal(name, "--lower") || bytes.equal(name, "--upper") || bytes.equal(name, "--step") || bytes.equal(name, "--xatol") || bytes.equal(name, "--fatol") || bytes.equal(name, "--maxfev") || bytes.equal(name, "--maxiter") || bytes.equal(name, "--gtol") || bytes.equal(name, "--objective") || bytes.equal(name, "--a") || bytes.equal(name, "--c") || bytes.equal(name, "--stability") || bytes.equal(name, "--seed") || bytes.equal(name, "--lr") || bytes.equal(name, "--beta1") || bytes.equal(name, "--beta2") || bytes.equal(name, "--eps") || bytes.equal(name, "--timeout-ms");
 }
 
 fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, args: &g Args) -> [heap, io_write, err_write, exec(""), clock, poll, args, pipe_write, pipe_read, child_signal] int {
@@ -240,7 +285,7 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
             k = k + 1;
         } else {
             if !known(arg(args, k)) {
-                return refuse(heap, io, "opt.unknown-flag", "an argument is not a flag of `opt minimize`", "the flags are --x0 --objective --method --lower --upper --step --xatol --fatol --maxfev --maxiter --gtol --a --c --stability --seed --persistent --timeout-ms, then `-- PROGRAM ARGS`");
+                return refuse(heap, io, "opt.unknown-flag", "an argument is not a flag of `opt minimize`", "the flags are --x0 --objective --method --lower --upper --step --xatol --fatol --maxfev --maxiter --gtol --a --c --stability --seed --lr --beta1 --beta2 --eps --persistent --timeout-ms, then `-- PROGRAM ARGS`");
             }
             if k + 1 >= stop {
                 return refuse(heap, io, "opt.usage", "a flag has no value", "write each flag as `--name VALUE`");
@@ -251,12 +296,15 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
     let (has_method, method) = flag(args, stop, "--method");
     var is_bfgs = false;
     var is_spsa = false;
+    var is_adam = false;
     if has_method && bytes.equal(method, "bfgs") {
         is_bfgs = true;
     } else if has_method && bytes.equal(method, "spsa") {
         is_spsa = true;
+    } else if has_method && bytes.equal(method, "adam") {
+        is_adam = true;
     } else if has_method && !bytes.equal(method, "nelder-mead") {
-        return refuse(heap, io, "opt.unknown-method", "the methods are nelder-mead, bfgs and spsa", "use --method nelder-mead, --method bfgs or --method spsa (docs/design.md section 1 lists what is not built)");
+        return refuse(heap, io, "opt.unknown-method", "the methods are nelder-mead, bfgs, spsa and adam", "use --method nelder-mead, --method bfgs, --method spsa or --method adam (docs/design.md section 1 lists what is not built)");
     }
     // each method has its own flags
     let (has_gt, gt_text) = flag(args, stop, "--gtol");
@@ -264,10 +312,27 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
     let (has_c, c_text) = flag(args, stop, "--c");
     let (has_st, st_text) = flag(args, stop, "--stability");
     let (has_sd, sd_text) = flag(args, stop, "--seed");
+    let (has_lr, lr_text) = flag(args, stop, "--lr");
+    let (has_b1, b1_text) = flag(args, stop, "--beta1");
+    let (has_b2, b2_text) = flag(args, stop, "--beta2");
+    let (has_ep, ep_text) = flag(args, stop, "--eps");
     if !is_spsa && (has_a || has_c || has_st || has_sd) {
         return refuse(heap, io, "opt.flag-not-for-method", "--a --c --stability and --seed are SPSA's flags", "give --method spsa (docs/design.md section 11)");
     }
-    if is_spsa {
+    if !is_adam && (has_lr || has_b1 || has_b2 || has_ep) {
+        return refuse(heap, io, "opt.flag-not-for-method", "--lr --beta1 --beta2 and --eps are Adam's flags", "give --method adam (docs/design.md section 15)");
+    }
+    if is_adam {
+        let (h1, t1) = flag(args, stop, "--lower");
+        let (h2, t2) = flag(args, stop, "--upper");
+        let (h3, t3) = flag(args, stop, "--step");
+        let (h4, t4) = flag(args, stop, "--xatol");
+        let (h5, t5) = flag(args, stop, "--fatol");
+        let (h6, t6) = flag(args, stop, "--maxfev");
+        if h1 || h2 || h3 || h4 || h5 || h6 || has_gt {
+            return refuse(heap, io, "opt.flag-not-for-method", "--lower --upper --step --xatol --fatol --maxfev and --gtol are other methods' flags", "Adam takes --maxiter --lr --beta1 --beta2 and --eps (docs/design.md section 15)");
+        }
+    } else if is_spsa {
         let (h1, t1) = flag(args, stop, "--lower");
         let (h2, t2) = flag(args, stop, "--upper");
         let (h3, t3) = flag(args, stop, "--step");
@@ -305,7 +370,7 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
     let (has_obj, obj_name) = flag(args, stop, "--objective");
     if has_obj {
         kind = objective.kind_of(obj_name);
-        if kind == 4 && is_bfgs {
+        if kind == 4 && (is_bfgs || is_adam) {
             return refuse(heap, io, "opt.no-gradient", "the objective `absolute` has no gradient (it has a corner at its minimum)", "use another objective, or --method nelder-mead");
         }
         if kind < 0 || stop < arg_count(args) {
@@ -350,6 +415,10 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
     var pert = 0.1;
     var big_a = 0.0 - 1.0;
     var seed = 1;
+    var rate = 0.001;
+    var beta1 = 0.9;
+    var beta2 = 0.999;
+    var eps = 0.00000001;
     let jac = box_slice(heap, n, 0.0);
     borrow mut x0 as &!xw in {
         bad = lists.read_into(x0_text, contents(xw));
@@ -475,9 +544,45 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
             status = refuse(heap, io, "opt.bad-number", "--seed is not a positive integer below 10^9", "e.g. 1; 0 is the generator's fixed point");
         }
     }
+    if status == 0 && has_lr {
+        let (okl, vl) = lists.number(lr_text);
+        if !okl || vl <= 0.0 {
+            status = refuse(heap, io, "opt.bad-number", "--lr is not a positive finite number", "the size of the steps, e.g. 0.01");
+        } else {
+            rate = vl;
+        }
+    }
+    if status == 0 && has_b1 {
+        let (okb, vb) = lists.number(b1_text);
+        if !okb || vb < 0.0 || vb >= 1.0 {
+            status = refuse(heap, io, "opt.bad-number", "--beta1 is not a number in [0, 1)", "e.g. 0.9");
+        } else {
+            beta1 = vb;
+        }
+    }
+    if status == 0 && has_b2 {
+        let (okb, vb) = lists.number(b2_text);
+        if !okb || vb < 0.0 || vb >= 1.0 {
+            status = refuse(heap, io, "opt.bad-number", "--beta2 is not a number in [0, 1)", "e.g. 0.999");
+        } else {
+            beta2 = vb;
+        }
+    }
+    if status == 0 && has_ep {
+        let (oke, ve) = lists.number(ep_text);
+        if !oke || ve <= 0.0 {
+            status = refuse(heap, io, "opt.bad-number", "--eps is not a positive finite number", "e.g. 1e-8");
+        } else {
+            eps = ve;
+        }
+    }
     if status == 0 {
         // scipy's rule for the limits: 200 N each when neither is given; the one that is not given is unlimited
-        if is_spsa {
+        if is_adam {
+            if maxiter < 0 {
+                maxiter = 100;
+            }
+        } else if is_spsa {
             if maxiter < 0 {
                 maxiter = 100;
             }
@@ -529,7 +634,15 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
                                     st = 11;
                                 } else {
                                     borrow mut link as &!lk in {
-                                        if is_spsa {
+                                        if is_adam {
+                                            borrow mut jac as &!jw in {
+                                                let (sa, fa, fea, ita) = adam.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), maxiter, rate, beta1, beta2, eps, contents(bw), contents(jw));
+                                                st = sa;
+                                                fun = fa;
+                                                nfev = fea;
+                                                nit = ita;
+                                            }
+                                        } else if is_spsa {
                                             let (sp, fp, fep, itp) = spsa.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), maxiter, gain, pert, big_a, seed, contents(bw));
                                             st = sp;
                                             fun = fp;
@@ -560,7 +673,7 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
                                     } else if st == 12 {
                                         status = refuse_at(heap, io, "opt.objective-failed", "the objective program exited with a status other than 0 at the point shown, or with --persistent stopped answering there (it ended, closed its output or was too slow)", "run it by hand with that point on standard input", contents(bw));
                                     } else if st == 13 {
-                                        status = refuse_at(heap, io, "opt.objective-output", "the objective program did not print what the method needs at the point shown", "Nelder-Mead: one number and a newline; BFGS: the value and then the gradient, n + 1 numbers on one line", contents(bw));
+                                        status = refuse_at(heap, io, "opt.objective-output", "the objective program did not print what the method needs at the point shown", "Nelder-Mead: one number and a newline; BFGS and Adam: the value and then the gradient, n + 1 numbers on one line", contents(bw));
                                     } else if st == 15 {
                                         status = refuse_at(heap, io, "opt.no-gradient", "the objective has no gradient here", "rosenbrock needs at least 2 parameters", contents(bw));
                                     } else {
@@ -582,7 +695,11 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
         }
         if status == 0 {
             borrow best as &br in {
-                if is_spsa {
+                if is_adam {
+                    borrow jac as &jr in {
+                        print_adam(heap, io, contents(br), contents(jr), fun, nfev, nit);
+                    }
+                } else if is_spsa {
                     print_spsa(heap, io, contents(br), fun, nfev, nit);
                 } else if is_bfgs {
                     borrow jac as &jr in {
