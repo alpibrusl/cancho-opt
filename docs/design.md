@@ -336,3 +336,35 @@ loss of 0.2322 (optimum 0.2308) in 301 evaluations where SPSA, with 601, is at 0
 * Whether `opt` should link the pinned cancho-tools contract package as `ml` and `stats` do. It does not yet: this first slice has no
   dependency, so it builds with the compiler it names and nothing else; the cost is that its refusals are written by hand in the
   contract's shape and not by its module.
+
+## 12. A trace of the iterations (design only; nothing built)
+
+**Why.** `opt minimize` prints only where it ended (`x`, `fun`, `nfev`, `nit`, `converged`). Measured 2026-11-10 (Nelder-Mead on Rosenbrock from (-1.2, 1), a build at the pin): 85 iterations and 159 evaluations
+are in the answer as two numbers, and the way `fun` fell to 8.2e-10 is not. A convergence plot (`fun` by iteration, the step, the gradient norm) is what a person or an agent reads to see whether to trust a result, and
+[cancho-plot](https://github.com/alpibrusl/cancho-plot) (`plot --x iter --y fun`) draws any table with a row for each step. This section says how `opt` would hand that table over without a new authority.
+
+**Choice: a `trace` member of the one JSON object, off unless asked.** `--trace K` (K from 1 to 1,000; absent is off) adds, after `message`:
+
+    "trace": {"columns": ["iter", "nfev", "fun"], "rows": [[1, 3, 24.2], [2, 5, 4.73], ...]}
+
+a row for every K-th iteration, plus the first and the last. The answer stays one object on standard output, **so `opt` still reads no file and writes none** (section 5 stands: no `file_write`, no `dir_write`); nothing changes
+unless `--trace` is given, so every byte the gates compare today stays what it is. A table in the answer is the shape `stats` and `ml` already use (`ml predict` prints `columns` and `rows`), and a reader takes it by its path (`plot`'s JSON
+input is planned to read `data` documents; `opt`'s answer has no `data`, so its path is the top-level `trace`: an open point there too).
+
+**Columns by method** (all numbers are JSON numbers as the answer's own are, the shortest text that reads back):
+
+| method | columns | what a row is |
+|---|---|---|
+| nelder-mead | `iter`, `nfev`, `fun` (best vertex), `size` (the largest distance of a vertex from the best), `x0` .. `x{n-1}` (the best vertex) | the state after the iteration scipy's `callback` is called at |
+| bfgs | `iter`, `nfev`, `njev`, `fun`, `gnorm` (the infinity norm of the gradient), `x0` .. | the same |
+| spsa | `iter`, `nfev`, `a_k`, `c_k` | the gains of the step: SPSA never evaluates the objective at its iterate, so `fun` is **not** a column (an extra evaluation for the trace would change `nfev`, and the answer must not depend on `--trace`); **[open]** whether `--trace-fun` should pay for it |
+
+**Rules.** (1) The answer, apart from `trace`, is byte for byte the answer without `--trace`: no extra evaluation, in any method. (2) More than 10^4 rows are not kept: `--trace K` with `maxiter / K` above that is `opt.trace-too-long`,
+exit 2, with the repair (a larger K). (3) `--trace` with anything but an integer in range is `opt.usage`. (4) Rows are written in iteration order and never reordered.
+
+**Gates (to write before the code).** The rows of Nelder-Mead and BFGS equal scipy's `callback` iterates and its `fun` value **bit for bit**, on the runs of `scripts/check_scipy.py` and `check_bfgs.py` (the same 65 and 565 runs): the oracle's
+`callback` values are recorded once, since `opt`'s own checks are Python scripts and a Python oracle is what it has. The answer with `--trace 1` and without must be identical outside `trace` on every run of both scripts. Mutants of the code
+that fills a row (the iteration number, the `nfev` at the callback, which vertex is the best, the K-th rule, the first and last row) must each fail one of them. **[open]** whether SPSA's gains are worth a gate against Qiskit's `callback`.
+
+**Not in this slice.** Per-evaluation traces (every `fun` call), the simplex vertices, a file output (`--trace-file`: it would need `file_write`, which section 5 says `opt` does not have, so it is a decision for the maintainer, not a default).
+
