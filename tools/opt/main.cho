@@ -75,10 +75,14 @@ fn refuse_at[&h, &i, &p](heap: &!h Heap, io: &!i Io, rule: &static [byte], messa
 }
 
 // The trace (docs/design.md section 12): `rows` rows of n + 4 floats (the iteration, the evaluations, the value, the size of the simplex, the best vertex) as the member `"trace"`.
-fn put_trace[&h, &t](heap: &!h Heap, w0: json.Writer, tr: &t [float], rows: int, n: int, bf: bool) -> [heap] json.Writer {
+fn put_trace[&h, &t](heap: &!h Heap, w0: json.Writer, tr: &t [float], rows: int, n: int, bf: bool, sp: bool) -> [heap] json.Writer {
     var lead = 4;
+    var nx = n;
     if bf {
         lead = 5;
+    }
+    if sp {
+        nx = 0;
     }
     var w = w0;
     w = json.put_key(heap, w, "trace");
@@ -87,7 +91,10 @@ fn put_trace[&h, &t](heap: &!h Heap, w0: json.Writer, tr: &t [float], rows: int,
     w = json.begin_array(heap, w);
     w = json.put_string(heap, w, "iter");
     w = json.put_string(heap, w, "nfev");
-    if bf {
+    if sp {
+        w = json.put_string(heap, w, "a_k");
+        w = json.put_string(heap, w, "c_k");
+    } else if bf {
         w = json.put_string(heap, w, "njev");
         w = json.put_string(heap, w, "fun");
         w = json.put_string(heap, w, "gnorm");
@@ -96,7 +103,7 @@ fn put_trace[&h, &t](heap: &!h Heap, w0: json.Writer, tr: &t [float], rows: int,
         w = json.put_string(heap, w, "size");
     }
     var k = 0;
-    while k < n {
+    while k < nx {
         region r {
             let name = alloc_slice[r](16, byte_of(0));
             name[0] = byte_of('x');
@@ -129,15 +136,15 @@ fn put_trace[&h, &t](heap: &!h Heap, w0: json.Writer, tr: &t [float], rows: int,
     var q = 0;
     while q < rows {
         w = json.begin_array(heap, w);
-        w = json.put_int(heap, w, truncate(tr[q * (n + lead)]));
-        w = json.put_int(heap, w, truncate(tr[q * (n + lead) + 1]));
+        w = json.put_int(heap, w, truncate(tr[q * (nx + lead)]));
+        w = json.put_int(heap, w, truncate(tr[q * (nx + lead) + 1]));
         var c = 2;
         if bf {
-            w = json.put_int(heap, w, truncate(tr[q * (n + lead) + 2]));
+            w = json.put_int(heap, w, truncate(tr[q * (nx + lead) + 2]));
             c = 3;
         }
-        while c < n + lead {
-            w = json.put_float(heap, w, tr[q * (n + lead) + c]);
+        while c < nx + lead {
+            w = json.put_float(heap, w, tr[q * (nx + lead) + c]);
             c = c + 1;
         }
         w = json.end_array(heap, w);
@@ -178,7 +185,7 @@ fn print_result[&h, &i, &b, &t](heap: &!h Heap, io: &!i Io, best: &b [float], fu
         w = json.put_string(heap, w, "Maximum number of iterations has been exceeded.");
     }
     if with_trace {
-        w = put_trace(heap, w, tr, rows, len(best), false);
+        w = put_trace(heap, w, tr, rows, len(best), false, false);
     }
     w = json.end_object(heap, w);
     let out = buffer.push(heap, json.finish(w), byte_of(10));
@@ -231,7 +238,7 @@ fn print_bfgs[&h, &i, &b, &j, &t](heap: &!h Heap, io: &!i Io, best: &b [float], 
         w = json.put_string(heap, w, "NaN result encountered.");
     }
     if with_trace {
-        w = put_trace(heap, w, tr, rows, len(best), true);
+        w = put_trace(heap, w, tr, rows, len(best), true, false);
     }
     w = json.end_object(heap, w);
     let out = buffer.push(heap, json.finish(w), byte_of(10));
@@ -242,7 +249,7 @@ fn print_bfgs[&h, &i, &b, &j, &t](heap: &!h Heap, io: &!i Io, best: &b [float], 
     return 0;
 }
 
-fn print_spsa[&h, &i, &b](heap: &!h Heap, io: &!i Io, best: &b [float], fun: float, nfev: int, nit: int) -> [heap, io_write] int {
+fn print_spsa[&h, &i, &b, &t](heap: &!h Heap, io: &!i Io, best: &b [float], fun: float, nfev: int, nit: int, tr: &t [float], rows: int, with_trace: bool) -> [heap, io_write] int {
     var w = json.writer(heap, 256);
     w = json.begin_object(heap, w);
     w = json.put_key(heap, w, "method");
@@ -265,6 +272,9 @@ fn print_spsa[&h, &i, &b](heap: &!h Heap, io: &!i Io, best: &b [float], fun: flo
     w = json.put_bool(heap, w, true);
     w = json.put_key(heap, w, "message");
     w = json.put_string(heap, w, "Ran all iterations; SPSA has no convergence test.");
+    if with_trace {
+        w = put_trace(heap, w, tr, rows, len(best), false, true);
+    }
     w = json.end_object(heap, w);
     let out = buffer.push(heap, json.finish(w), byte_of(10));
     borrow out as &or in {
@@ -436,8 +446,8 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
         return refuse(heap, io, "opt.flag-not-for-method", "--gtol is BFGS's flag", "give --method bfgs, or use --xatol and --fatol for Nelder-Mead");
     }
     let (has_tr, tr_text) = flag(args, stop, "--trace");
-    if has_tr && (is_spsa || is_adam) {
-        return refuse(heap, io, "opt.flag-not-for-method", "--trace is built for nelder-mead and bfgs only so far", "leave --trace out, or use --method nelder-mead or bfgs (docs/design.md section 12)");
+    if has_tr && is_adam {
+        return refuse(heap, io, "opt.flag-not-for-method", "--trace is built for nelder-mead, bfgs and spsa; Adam has no trace", "leave --trace out, or use --method nelder-mead, bfgs or spsa (docs/design.md section 12)");
     }
     let (has_x0, x0_text) = flag(args, stop, "--x0");
     if !has_x0 {
@@ -690,7 +700,7 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
                 status = refuse(heap, io, "opt.usage", "--trace is not an integer from 1 to 1000", "e.g. --trace 1 for every iteration");
             } else {
                 var bound = maxiter;
-                if !is_bfgs && maxfev < bound {
+                if !is_bfgs && !is_spsa && maxfev < bound {
                     bound = maxfev;
                 }
                 trows_max = (bound + tk - 1) / tk + 1;
@@ -699,11 +709,13 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
                 }
             }
         }
-        var tlead = 4;
+        var twidth = n + 4;
         if is_bfgs {
-            tlead = 5;
+            twidth = n + 5;
+        } else if is_spsa {
+            twidth = 4;
         }
-        let trace = box_slice(heap, trows_max * (n + tlead), 0.0);
+        let trace = box_slice(heap, trows_max * twidth, 0.0);
         var trows = 0;
         // the program: its name, and its arguments each followed by a NUL
         var program = arg(args, 0)[0..0];
@@ -751,11 +763,14 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
                                                 nit = ita;
                                             }
                                         } else if is_spsa {
-                                            let (sp, fp, fep, itp) = spsa.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), maxiter, gain, pert, big_a, seed, contents(bw));
-                                            st = sp;
-                                            fun = fp;
-                                            nfev = fep;
-                                            nit = itp;
+                                            borrow mut trace as &!tw in {
+                                                let (sp, fp, fep, itp, rwp) = spsa.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), maxiter, gain, pert, big_a, seed, contents(bw), tk, contents(tw));
+                                                st = sp;
+                                                fun = fp;
+                                                nfev = fep;
+                                                nit = itp;
+                                                trows = rwp;
+                                            }
                                         } else if is_bfgs {
                                             borrow mut jac as &!jw in {
                                                 borrow mut trace as &!tw in {
@@ -814,7 +829,9 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
                         print_adam(heap, io, contents(br), contents(jr), fun, nfev, nit);
                     }
                 } else if is_spsa {
-                    print_spsa(heap, io, contents(br), fun, nfev, nit);
+                    borrow trace as &tq in {
+                        print_spsa(heap, io, contents(br), fun, nfev, nit, contents(tq), trows, tk > 0);
+                    }
                 } else if is_bfgs {
                     borrow jac as &jr in {
                         borrow trace as &tq in {
