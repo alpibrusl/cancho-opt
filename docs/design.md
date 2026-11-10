@@ -347,9 +347,8 @@ are in the answer as two numbers, and the way `fun` fell to 8.2e-10 is not. A co
 
     "trace": {"columns": ["iter", "nfev", "fun"], "rows": [[1, 3, 24.2], [2, 5, 4.73], ...]}
 
-a row for every K-th iteration, plus the first and the last. The answer stays one object on standard output, **so `opt` still reads no file and writes none** (section 5 stands: no `file_write`, no `dir_write`); nothing changes
-unless `--trace` is given, so every byte the gates compare today stays what it is. A table in the answer is the shape `stats` and `ml` already use (`ml predict` prints `columns` and `rows`), and a reader takes it by its path (`plot`'s JSON
-input is planned to read `data` documents; `opt`'s answer has no `data`, so its path is the top-level `trace`: an open point there too).
+a row for every K-th iteration, plus the first and the last (a row is written once: when the last iteration is a multiple of K, or K is 1, there is no second copy). The answer stays one object on standard output, **so `opt` still reads no file and writes none** (section 5 stands: no `file_write`, no `dir_write`); nothing changes
+unless `--trace` is given, so every byte the gates compare today stays what it is. A table in the answer is the shape `stats` and `ml` already use (`ml predict` prints `columns` and `rows`), and a reader takes it by its path (`plot --json trace`: measured 2026-11-10 on a document of exactly this shape, with plot at `439e943` of cancho-plot, it reads the `columns` and `rows` at that path and draws `--x iter --y fun,size --with lines`; the path is the top-level `trace` because `opt`'s answer has no `data`).
 
 **Columns by method** (all numbers are JSON numbers as the answer's own are, the shortest text that reads back):
 
@@ -359,8 +358,8 @@ input is planned to read `data` documents; `opt`'s answer has no `data`, so its 
 | bfgs | `iter`, `nfev`, `njev`, `fun`, `gnorm` (the infinity norm of the gradient), `x0` .. | the same |
 | spsa | `iter`, `nfev`, `a_k`, `c_k` | the gains of the step: SPSA never evaluates the objective at its iterate, so `fun` is **not** a column (an extra evaluation for the trace would change `nfev`, and the answer must not depend on `--trace`); **[open]** whether `--trace-fun` should pay for it |
 
-**Rules.** (1) The answer, apart from `trace`, is byte for byte the answer without `--trace`: no extra evaluation, in any method. (2) More than 10^4 rows are not kept: `--trace K` with `maxiter / K` above that is `opt.trace-too-long`,
-exit 2, with the repair (a larger K). (3) `--trace` with anything but an integer in range is `opt.usage`. (4) Rows are written in iteration order and never reordered.
+**Rules.** (1) The answer, apart from `trace`, is byte for byte the answer without `--trace`: no extra evaluation, in any method. (2) More than 4,999 rows are not kept: `--trace K` with `maxiter / K` above that is `opt.trace-too-long`,
+exit 2, with the repair (a larger K). The limit was 10^4 in the first draft of this section; it is 4,999 because `plot` reads at most 4,999 rows of a curve and 5,000 of a table (`plot.too-many-points` beyond), so a longer trace could be written but not drawn. (3) `--trace` with anything but an integer in range is `opt.usage`. (4) Rows are written in iteration order and never reordered.
 
 **Gates (to write before the code).** The rows of Nelder-Mead and BFGS equal scipy's `callback` iterates and its `fun` value **bit for bit**, on the runs of `scripts/check_scipy.py` and `check_bfgs.py` (the same 65 and 565 runs): the oracle's
 `callback` values are recorded once, since `opt`'s own checks are Python scripts and a Python oracle is what it has. The answer with `--trace 1` and without must be identical outside `trace` on every run of both scripts. Mutants of the code
@@ -368,3 +367,7 @@ that fills a row (the iteration number, the `nfev` at the callback, which vertex
 
 **Not in this slice.** Per-evaluation traces (every `fun` call), the simplex vertices, a file output (`--trace-file`: it would need `file_write`, which section 5 says `opt` does not have, so it is a decision for the maintainer, not a default).
 
+
+**What a plot of the trace can and cannot do** (measured with cancho-plot `439e943`, on a document shaped as above): `plot --json trace --x iter --y fun,size --with lines --logy` draws two series on a log axis with power-of-ten labels. Two limits follow from the plot, and are stated here so that nobody finds them in a run:
+(a) `--logy` refuses a value that is not above 0 (`plot.log-nonpositive`, with the line of the row); a Nelder-Mead run that reaches exactly `fun` = 0 (for example a sphere from a start on an axis) makes the log chart refuse, and the repair is to plot without `--logy`, not to shift the value;
+(b) `plot` reads one document, so two runs (two methods, two starts) are two charts; putting them in one chart needs their rows in one long table with a column naming the run (`--by`), which `opt` does not print and a caller can build with `stats`/`table` before plotting.
