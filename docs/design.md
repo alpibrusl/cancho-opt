@@ -336,3 +336,45 @@ loss of 0.2322 (optimum 0.2308) in 301 evaluations where SPSA, with 601, is at 0
 * Whether `opt` should link the pinned cancho-tools contract package as `ml` and `stats` do. It does not yet: this first slice has no
   dependency, so it builds with the compiler it names and nothing else; the cost is that its refusals are written by hand in the
   contract's shape and not by its module.
+
+## 12. A trace of the iterations (built for Nelder-Mead; BFGS and the others not yet)
+
+**Why.** `opt minimize` prints only where it ended (`x`, `fun`, `nfev`, `nit`, `converged`). Measured 2026-11-10 (Nelder-Mead on Rosenbrock from (-1.2, 1), a build at the pin): 85 iterations and 159 evaluations
+are in the answer as two numbers, and the way `fun` fell to 8.2e-10 is not. A convergence plot (`fun` by iteration, the step, the gradient norm) is what a person or an agent reads to see whether to trust a result, and
+[cancho-plot](https://github.com/alpibrusl/cancho-plot) (`plot --x iter --y fun`) draws any table with a row for each step. This section says how `opt` would hand that table over without a new authority.
+
+**Choice: a `trace` member of the one JSON object, off unless asked.** `--trace K` (K from 1 to 1,000; absent is off) adds, after `message`:
+
+    "trace": {"columns": ["iter", "nfev", "fun"], "rows": [[1, 3, 24.2], [2, 5, 4.73], ...]}
+
+a row for every K-th iteration, plus the first and the last (a row is written once: when the last iteration is a multiple of K, or K is 1, there is no second copy). The answer stays one object on standard output, **so `opt` still reads no file and writes none** (section 5 stands: no `file_write`, no `dir_write`); nothing changes
+unless `--trace` is given, so every byte the gates compare today stays what it is. A table in the answer is the shape `stats` and `ml` already use (`ml predict` prints `columns` and `rows`), and a reader takes it by its path (`plot --json trace`: measured 2026-11-10 on a document of exactly this shape, with plot at `439e943` of cancho-plot, it reads the `columns` and `rows` at that path and draws `--x iter --y fun,size --with lines`; the path is the top-level `trace` because `opt`'s answer has no `data`).
+
+**Columns by method** (all numbers are JSON numbers as the answer's own are, the shortest text that reads back):
+
+| method | columns | what a row is |
+|---|---|---|
+| nelder-mead | `iter`, `nfev`, `fun` (best vertex), `size` (the largest distance of a vertex from the best), `x0` .. `x{n-1}` (the best vertex) | the state after the iteration scipy's `callback` is called at |
+| bfgs | `iter`, `nfev`, `njev`, `fun`, `gnorm` (the infinity norm of the gradient), `x0` .. | the same |
+| spsa | `iter`, `nfev`, `a_k`, `c_k` | the gains of the step: SPSA never evaluates the objective at its iterate, so `fun` is **not** a column (an extra evaluation for the trace would change `nfev`, and the answer must not depend on `--trace`); **[open]** whether `--trace-fun` should pay for it |
+
+**Rules.** (1) The answer, apart from `trace`, is byte for byte the answer without `--trace`: no extra evaluation, in any method. (2) More than 4,999 rows are not kept: `--trace K` with `maxiter / K` above that is `opt.trace-too-long`,
+exit 2, with the repair (a larger K). The limit was 10^4 in the first draft of this section; it is 4,999 because `plot` reads at most 4,999 rows of a curve and 5,000 of a table (`plot.too-many-points` beyond), so a longer trace could be written but not drawn. (3) `--trace` with anything but an integer in range is `opt.usage`. (4) Rows are written in iteration order and never reordered.
+
+**Gates (to write before the code).** The rows of Nelder-Mead and BFGS equal scipy's `callback` iterates and its `fun` value **bit for bit**, on the runs of `scripts/check_scipy.py` and `check_bfgs.py` (the same 65 and 565 runs): the oracle's
+`callback` values are recorded once, since `opt`'s own checks are Python scripts and a Python oracle is what it has. The answer with `--trace 1` and without must be identical outside `trace` on every run of both scripts. Mutants of the code
+that fills a row (the iteration number, the `nfev` at the callback, which vertex is the best, the K-th rule, the first and last row) must each fail one of them. **[open]** whether SPSA's gains are worth a gate against Qiskit's `callback`.
+
+**Not in this slice.** Per-evaluation traces (every `fun` call), the simplex vertices, a file output (`--trace-file`: it would need `file_write`, which section 5 says `opt` does not have, so it is a decision for the maintainer, not a default).
+
+**Built (Nelder-Mead), and what building it corrected.** `opt minimize --trace K` is in `lib/nm/nm.cho` and `tools/opt/main.cho`; BFGS, SPSA and Adam refuse `--trace` with `opt.flag-not-for-method` until their rows are built (issue #13). Measured 2026-11-10 against scipy 1.17.1:
+
+* **A row is a callback, and scipy calls its callback also for an iteration abandoned because the budget ran out.** Recording scipy's callback on the 65 runs of `scripts/check_scipy.py` showed it: with `--maxfev 40` on Rosenbrock from (-1.2, 1) scipy makes 20 callbacks, the last one after the abandoned iteration (same point and value as the one before, `nfev` 40), and a first version of the code that wrote rows only for finished iterations failed 3 of the 65 runs (the three with `--maxfev` that stop inside an iteration). `iter` is therefore the number of the callback (1, 2, ...), not `nit`: for the default Rosenbrock run the last row is `iter` 84 with `nfev` 159 while the answer says `nit` 85.
+* **The limit on rows is computed before the run, from `min(maxiter, maxfev)`** (each iteration costs at least one evaluation): rows = ceil(bound / K) + 1, and above 4,999 the run is refused (`opt.trace-too-long`). With the defaults (200 N each) any K is accepted; `--maxiter 100000 --trace 1` is refused although a run might stop sooner, because the check must not wait for the end of a run.
+* **`size` is not compared with scipy**: scipy gives its callback the best vertex only, not the simplex. It is the expression the convergence test uses (the largest distance of a vertex from the best, taken over every coordinate), which `check_scipy.py` does compare bit for bit through the iteration at which the run stops; no gate pins the column itself, and a mutant of it survives (listed, not explained away).
+* **The gate** is a cancho program, `tests/check_trace.cho`, run on `tests/golden/trace_nm.json` (65 runs, 10,643 callback rows of `iter, nfev, fun, x...`, recorded once from scipy 1.17.1 by a throwaway script that is not in the repository; the file is data and nothing regenerates it but scipy). `cancho build tests/check_trace.cho --std -o build/check_trace && build/check_trace build/opt < tests/golden/trace_nm.json` runs each case with K = 1 and K = 7 and requires: the bytes before `,"trace":` to equal the answer without `--trace`; the rows to be the golden's first, every K-th and last, each once; `iter`, `nfev`, `fun` and every coordinate equal as doubles; and seven refusals (`--trace` 0, `x`, 1001; too long; the three methods not built). Ten mutants of the row-filling code (the K-th rule, the first row, the last row, `nfev`, `fun`, which vertex, the iteration number, the abandoned iteration, the kept counter) each make it fail. The older gates still pass with the change (`check_scipy` 65, `check_bfgs` 65, `check_cli`, `check_adam`, `check_persistent`; `check_spsa` needs qiskit, which is not installed here).
+
+
+**What a plot of the trace can and cannot do** (measured with cancho-plot `439e943`, on a document shaped as above): `plot --json trace --x iter --y fun,size --with lines --logy` draws two series on a log axis with power-of-ten labels. Two limits follow from the plot, and are stated here so that nobody finds them in a run:
+(a) `--logy` refuses a value that is not above 0 (`plot.log-nonpositive`, with the line of the row); a Nelder-Mead run that reaches exactly `fun` = 0 (for example a sphere from a start on an axis) makes the log chart refuse, and the repair is to plot without `--logy`, not to shift the value;
+(b) `plot` reads one document, so two runs (two methods, two starts) are two charts; putting them in one chart needs their rows in one long table with a column naming the run (`--by`), which `opt` does not print and a caller can build with `stats`/`table` before plotting.

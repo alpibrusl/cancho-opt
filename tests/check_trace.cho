@@ -1,0 +1,317 @@
+edition 7;
+
+// Gate of docs/design.md section 12 for Nelder-Mead: `opt minimize --trace K` against the values scipy's `callback` was given.
+//
+//     cancho run tests/check_trace.cho --std -- build/opt < tests/golden/trace_nm.json
+//
+// The golden holds, for each of the 65 runs of scripts/check_scipy.py, the arguments and the rows [iter, nfev, fun, x...] scipy's callback saw
+// (recorded once, with scipy 1.17.1; `size` is not in it: scipy does not give the simplex to its callback). For every run, with K = 1 and with K = 7, the program
+//   (1) runs `opt` with and without --trace and requires the bytes before `,"trace":` to be the answer without it (rule 1),
+//   (2) requires the rows to be those of the golden with iter = 1, a multiple of K, or the last (rules 2 and 4), each once,
+//   (3) compares iter, nfev, fun and every coordinate as doubles, exactly.
+// It prints one line, `trace gate: ok N runs` or the first failures, and the status says which.
+
+import std.buffer;
+import std.bytes;
+import std.io;
+import std.json;
+import std.process;
+
+fn run[&h, &x, &c, &p, &a](heap: &!h Heap, exec: &x Exec(""), clock: &c Clock, exe: &p [byte], argv: &a [byte]) -> [heap, exec(""), clock, poll] buffer.Buffer {
+    var out = buffer.empty(heap, 0);
+    match process.channels_with_errors() {
+        process.ChannelsWithErrors::Failed(e) => {
+            out = out;
+        }
+        process.ChannelsWithErrors::Ok(to_child, child_in, from_child, child_out, from_errors, child_errors) => {
+            match exec_spawn(exec, exe, argv, "PATH=/usr/local/bin:/usr/bin:/bin\0HOME=/tmp\0", Stdio::Pipe(child_in), Stdio::Pipe(child_out), Stdio::Pipe(child_errors)) {
+                Spawned::Failed(e) => {
+                    process.close(to_child, from_child);
+                    pipe_close(from_errors);
+                }
+                Spawned::Ok(child) => {
+                    let (got, errors, ran) = process.capture_both(heap, clock, child, to_child, from_child, from_errors, "", 4000000, 65536, 60000);
+                    buffer.drop(heap, out);
+                    var gone = true;
+                    borrow got as &g0 in {
+                        gone = len(buffer.bytes(g0)) == 0;
+                    }
+                    if gone {
+                        buffer.drop(heap, got);
+                        out = errors;
+                    } else {
+                        out = got;
+                        buffer.drop(heap, errors);
+                    }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// the arguments of the case: `minimize`, the golden's own, then `--trace K` when k > 0; each followed by a NUL
+fn argv_of[&h, &g, &t](heap: &!h Heap, gsrc: &g [byte], gt: &t [int], case: int, k: int) -> [heap] buffer.Buffer {
+    var out = buffer.append(heap, buffer.empty(heap, 64), "minimize");
+    out = buffer.push(heap, out, byte_of(0));
+    let args = json.get(gsrc, gt, case, "args");
+    var i = 0;
+    while i < json.count(gt, args) {
+        let node = json.at(gt, args, i);
+        out = buffer.append(heap, out, json.string_view(gsrc, gt, node));
+        out = buffer.push(heap, out, byte_of(0));
+        i = i + 1;
+    }
+    if k > 0 {
+        out = buffer.append(heap, out, "--trace");
+        out = buffer.push(heap, out, byte_of(0));
+        out = buffer.push_nat(heap, out, k);
+        out = buffer.push(heap, out, byte_of(0));
+    }
+    return out;
+}
+
+// the index of `,"trace":` in `text`, or -1
+fn trace_at[&t](text: &t [byte]) -> [] int {
+    let key = ",\"trace\":";
+    var i = 0;
+    while i + len(key) <= len(text) {
+        if bytes.equal(text[i..i + len(key)], key) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// is `needle` in `text`
+fn has[&t, &n](text: &t [byte], needle: &n [byte]) -> [] bool {
+    var i = 0;
+    while i + len(needle) <= len(text) {
+        if bytes.equal(text[i..i + len(needle)], needle) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// the answer to `minimize --x0 1,2 --objective sphere` and `rest` (NUL separated): does it contain `rule`?
+fn refused[&h, &x, &c, &g](heap: &!h Heap, exec: &x Exec(""), clock: &c Clock, args: &g Args, rest: &static [byte], rule: &static [byte]) -> [heap, exec(""), clock, poll, args] int {
+    var argv = buffer.append(heap, buffer.empty(heap, 64), "minimize\0--x0\01,2\0--objective\0sphere\0");
+    argv = buffer.append(heap, argv, rest);
+    var out = buffer.empty(heap, 0);
+    borrow argv as &ab in {
+        buffer.drop(heap, out);
+        out = run(heap, exec, clock, arg(args, 1), buffer.bytes(ab));
+    }
+    buffer.drop(heap, argv);
+    var bad = 1;
+    borrow out as &ob in {
+        if has(buffer.bytes(ob), rule) && !has(buffer.bytes(ob), "\"trace\":") {
+            bad = 0;
+        }
+    }
+    buffer.drop(heap, out);
+    return bad;
+}
+
+fn same(a: float, b: float) -> [] bool {
+    return a == b;
+}
+
+// 0 when the run is as the golden says, else 1
+fn check_case[&h, &g, &t, &p, &o](heap: &!h Heap, gsrc: &g [byte], gt: &t [int], case: int, plain: &p [byte], got: &o [byte], k: int) -> [heap] int {
+    let cut = trace_at(got);
+    if cut < 0 || len(plain) < 2 || len(got) < 3 {
+        return 1;
+    }
+    // (1) before the trace, the answer without it; after it, the end of the object
+    if !bytes.equal(got[0..cut], plain[0..len(plain) - 2]) || !bytes.equal(got[len(got) - 3..len(got)], "}}\n") {
+        return 1;
+    }
+    var bad = 0;
+    let tape = box_slice(heap, json.tape_len(got), 0);
+    borrow mut tape as &!tw in {
+        let tp = contents(tw);
+        if json.parse(got, tp) <= 0 {
+            bad = 1;
+        } else {
+            let trace = json.get(got, tp, 0, "trace");
+            let rows = json.get(got, tp, trace, "rows");
+            let want = json.get(gsrc, gt, case, "rows");
+            let total = json.count(gt, want);
+            // the golden rows that are kept: the first, every k-th, the last
+            var kept = 0;
+            var q = 0;
+            while q < total {
+                let iter = q + 1;
+                if iter == 1 || iter % k == 0 || iter == total {
+                    let r = json.at(tp, rows, kept);
+                    let gr = json.at(gt, want, q);
+                    kept = kept + 1;
+                    if r < 0 || json.count(tp, r) != json.count(gt, gr) + 1 {
+                        bad = 1;
+                    } else {
+                        var i = 0;
+                        while i < json.count(gt, gr) {
+                            var at = i;
+                            if i >= 3 {
+                                at = i + 1;
+                            }
+                            let a = json.to_float(got, tp, json.at(tp, r, at));
+                            let b = json.to_float(gsrc, gt, json.at(gt, gr, i));
+                            if !same(a, b) {
+                                bad = 1;
+                            }
+                            i = i + 1;
+                        }
+                    }
+                }
+                q = q + 1;
+            }
+            if json.count(tp, rows) != kept {
+                bad = 1;
+            }
+        }
+    }
+    unbox_slice(heap, tape);
+    return bad;
+}
+
+fn gate[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, args: &g Args) -> [heap, io_read, io_write, exec(""), clock, poll, args] int {
+    if arg_count(args) < 2 {
+        return 2;
+    }
+    let (text, big) = read_all(heap, io);
+    var failures = 0;
+    var runs = 0;
+    borrow text as &tb in {
+        let src = buffer.bytes(tb);
+        let tape = box_slice(heap, json.tape_len(src), 0);
+        borrow mut tape as &!tw in {
+            let gt = contents(tw);
+            if big || json.parse(src, gt) <= 0 {
+                failures = 1;
+            } else {
+                let cases = json.count(gt, 0);
+                var c = 0;
+                while c < cases {
+                    let case = json.at(gt, 0, c);
+                    let plain_args = argv_of(heap, src, gt, case, 0);
+                    var plain = buffer.empty(heap, 0);
+                    borrow plain_args as &pa in {
+                        buffer.drop(heap, plain);
+                        plain = run(heap, exec, clock, arg(args, 1), buffer.bytes(pa));
+                    }
+                    buffer.drop(heap, plain_args);
+                    var kk = 1;
+                    while kk <= 7 {
+                        let with_args = argv_of(heap, src, gt, case, kk);
+                        var got = buffer.empty(heap, 0);
+                        borrow with_args as &wa in {
+                            buffer.drop(heap, got);
+                            got = run(heap, exec, clock, arg(args, 1), buffer.bytes(wa));
+                        }
+                        buffer.drop(heap, with_args);
+                        borrow plain as &pb in {
+                            borrow got as &gb in {
+                                let bad = check_case(heap, src, gt, case, buffer.bytes(pb), buffer.bytes(gb), kk);
+                                failures = failures + bad;
+                                if bad != 0 {
+                                    var note = buffer.append(heap, buffer.empty(heap, 32), "failed: run ");
+                                    note = buffer.push_nat(heap, note, c);
+                                    note = buffer.append(heap, note, " with K = ");
+                                    note = buffer.push_nat(heap, note, kk);
+                                    note = buffer.push(heap, note, byte_of(10));
+                                    borrow note as &nb in {
+                                        buffer.write(io, nb);
+                                    }
+                                    buffer.drop(heap, note);
+                                }
+                            }
+                        }
+                        buffer.drop(heap, got);
+                        runs = runs + 1;
+                        kk = kk + 6;
+                    }
+                    buffer.drop(heap, plain);
+                    c = c + 1;
+                }
+            }
+        }
+        unbox_slice(heap, tape);
+    }
+    buffer.drop(heap, text);
+    // the refusals (rules 2 and 3 of section 12, and the methods it is not built for)
+    failures = failures + refused(heap, exec, clock, args, "--trace\00\0", "opt.usage");
+    failures = failures + refused(heap, exec, clock, args, "--trace\0x\0", "opt.usage");
+    failures = failures + refused(heap, exec, clock, args, "--trace\01001\0", "opt.usage");
+    failures = failures + refused(heap, exec, clock, args, "--trace\01\0--maxiter\0100000\0", "opt.trace-too-long");
+    failures = failures + refused(heap, exec, clock, args, "--trace\01\0--method\0bfgs\0", "opt.flag-not-for-method");
+    failures = failures + refused(heap, exec, clock, args, "--trace\01\0--method\0spsa\0", "opt.flag-not-for-method");
+    failures = failures + refused(heap, exec, clock, args, "--trace\01\0--method\0adam\0", "opt.flag-not-for-method");
+    var line = buffer.empty(heap, 64);
+    if failures == 0 {
+        line = buffer.append(heap, line, "trace gate: ok ");
+        line = buffer.push_nat(heap, line, runs);
+        line = buffer.append(heap, line, " runs\n");
+    } else {
+        line = buffer.append(heap, line, "trace gate: FAILED ");
+        line = buffer.push_nat(heap, line, failures);
+        line = buffer.append(heap, line, " of ");
+        line = buffer.push_nat(heap, line, runs);
+        line = buffer.append(heap, line, " runs\n");
+    }
+    borrow line as &lb in {
+        buffer.write(io, lb);
+    }
+    buffer.drop(heap, line);
+    if failures == 0 {
+        return 0;
+    }
+    return 1;
+}
+
+// the whole of standard input, up to 16 MiB: (text, whether there was more)
+fn read_all[&h, &i](heap: &!h Heap, io: &!i Io) -> [heap, io_read] (buffer.Buffer, bool) {
+    var all = buffer.empty(heap, 65536);
+    var big = false;
+    var c = getchar(io);
+    var held = 0;
+    while c >= 0 && !big {
+        all = buffer.push(heap, all, byte_of(c));
+        held = held + 1;
+        if held > 16777216 {
+            big = true;
+        }
+        c = getchar(io);
+    }
+    return (all, big);
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec } = split(world);
+    release(ffi);
+    release(fs);
+    release(net);
+    release(signals);
+    var status = 0;
+    borrow args as &g in {
+        borrow exec as &x in {
+            borrow clock as &c in {
+                borrow mut heap as &!h in {
+                    borrow mut io as &!i in {
+                        status = gate(h, i, x, c, g);
+                    }
+                }
+            }
+        }
+    }
+    release(args);
+    release(exec);
+    release(clock);
+    release(heap);
+    release(io);
+    return status;
+}
