@@ -31,6 +31,7 @@ OPT=build/opt python3 scripts/check_spsa.py [--mutants]     # needs qiskit-algor
 OPT=build/opt python3 scripts/check_adam.py [--mutants]     # needs torch for the comparison with torch.optim.Adam
 OPT=build/opt python3 scripts/check_cli.py
 build/check_trace build/opt < tests/golden/trace_nm.json     # --trace: docs/design.md section 12 (build it first: cancho build tests/check_trace.cho --std -o build/check_trace)
+build/check_trace build/opt bfgs < tests/golden/trace_bfgs.json   # the same for BFGS
 OPT=build/opt python3 scripts/check_persistent.py [--mutants]   # --persistent: docs/design.md section 14
 OPT=build/opt python3 scripts/check_examples.py              # examples/train: fitting a model, one program for each use case
 OPT=build/opt python3 scripts/gen_stories.py --check        # docs/index.html and docs/stories.html are what opt prints now

@@ -2,7 +2,8 @@ edition 7;
 
 // Gate of docs/design.md section 12 for Nelder-Mead: `opt minimize --trace K` against the values scipy's `callback` was given.
 //
-//     cancho run tests/check_trace.cho --std -- build/opt < tests/golden/trace_nm.json
+//     build/check_trace build/opt < tests/golden/trace_nm.json            (Nelder-Mead)
+//     build/check_trace build/opt bfgs < tests/golden/trace_bfgs.json     (BFGS: the rows are iter, nfev, njev, fun, gnorm, x...)
 //
 // The golden holds, for each of the 65 runs of scripts/check_scipy.py, the arguments and the rows [iter, nfev, fun, x...] scipy's callback saw
 // (recorded once, with scipy 1.17.1; `size` is not in it: scipy does not give the simplex to its callback). For every run, with K = 1 and with K = 7, the program
@@ -121,7 +122,7 @@ fn same(a: float, b: float) -> [] bool {
 }
 
 // 0 when the run is as the golden says, else 1
-fn check_case[&h, &g, &t, &p, &o](heap: &!h Heap, gsrc: &g [byte], gt: &t [int], case: int, plain: &p [byte], got: &o [byte], k: int) -> [heap] int {
+fn check_case[&h, &g, &t, &p, &o](heap: &!h Heap, gsrc: &g [byte], gt: &t [int], case: int, plain: &p [byte], got: &o [byte], k: int, extra: int) -> [heap] int {
     let cut = trace_at(got);
     if cut < 0 || len(plain) < 2 || len(got) < 3 {
         return 1;
@@ -150,13 +151,13 @@ fn check_case[&h, &g, &t, &p, &o](heap: &!h Heap, gsrc: &g [byte], gt: &t [int],
                     let r = json.at(tp, rows, kept);
                     let gr = json.at(gt, want, q);
                     kept = kept + 1;
-                    if r < 0 || json.count(tp, r) != json.count(gt, gr) + 1 {
+                    if r < 0 || json.count(tp, r) != json.count(gt, gr) + extra {
                         bad = 1;
                     } else {
                         var i = 0;
                         while i < json.count(gt, gr) {
                             var at = i;
-                            if i >= 3 {
+                            if extra == 1 && i >= 3 {
                                 at = i + 1;
                             }
                             let a = json.to_float(got, tp, json.at(tp, r, at));
@@ -182,6 +183,11 @@ fn check_case[&h, &g, &t, &p, &o](heap: &!h Heap, gsrc: &g [byte], gt: &t [int],
 fn gate[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, args: &g Args) -> [heap, io_read, io_write, exec(""), clock, poll, args] int {
     if arg_count(args) < 2 {
         return 2;
+    }
+    // `nm` (the default): the golden has no `size`; `bfgs`: the rows are the golden's
+    var extra = 1;
+    if arg_count(args) > 2 && bytes.equal(arg(args, 2), "bfgs") {
+        extra = 0;
     }
     let (text, big) = read_all(heap, io);
     var failures = 0;
@@ -216,7 +222,7 @@ fn gate[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock
                         buffer.drop(heap, with_args);
                         borrow plain as &pb in {
                             borrow got as &gb in {
-                                let bad = check_case(heap, src, gt, case, buffer.bytes(pb), buffer.bytes(gb), kk);
+                                let bad = check_case(heap, src, gt, case, buffer.bytes(pb), buffer.bytes(gb), kk, extra);
                                 failures = failures + bad;
                                 if bad != 0 {
                                     var note = buffer.append(heap, buffer.empty(heap, 32), "failed: run ");
@@ -244,13 +250,14 @@ fn gate[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock
     }
     buffer.drop(heap, text);
     // the refusals (rules 2 and 3 of section 12, and the methods it is not built for)
-    failures = failures + refused(heap, exec, clock, args, "--trace\00\0", "opt.usage");
-    failures = failures + refused(heap, exec, clock, args, "--trace\0x\0", "opt.usage");
-    failures = failures + refused(heap, exec, clock, args, "--trace\01001\0", "opt.usage");
-    failures = failures + refused(heap, exec, clock, args, "--trace\01\0--maxiter\0100000\0", "opt.trace-too-long");
-    failures = failures + refused(heap, exec, clock, args, "--trace\01\0--method\0bfgs\0", "opt.flag-not-for-method");
-    failures = failures + refused(heap, exec, clock, args, "--trace\01\0--method\0spsa\0", "opt.flag-not-for-method");
-    failures = failures + refused(heap, exec, clock, args, "--trace\01\0--method\0adam\0", "opt.flag-not-for-method");
+    if extra == 1 {
+        failures = failures + refused(heap, exec, clock, args, "--trace\00\0", "opt.usage");
+        failures = failures + refused(heap, exec, clock, args, "--trace\0x\0", "opt.usage");
+        failures = failures + refused(heap, exec, clock, args, "--trace\01001\0", "opt.usage");
+        failures = failures + refused(heap, exec, clock, args, "--trace\01\0--maxiter\0100000\0", "opt.trace-too-long");
+        failures = failures + refused(heap, exec, clock, args, "--trace\01\0--method\0spsa\0", "opt.flag-not-for-method");
+        failures = failures + refused(heap, exec, clock, args, "--trace\01\0--method\0adam\0", "opt.flag-not-for-method");
+    }
     var line = buffer.empty(heap, 64);
     if failures == 0 {
         line = buffer.append(heap, line, "trace gate: ok ");

@@ -444,7 +444,7 @@ fn line_search[&h, &i, &x, &c, &p, &a, &w, &s, &b, &d, &z](heap: &!h Heap, io: &
 // Minimise from `x0` with gradient tolerance `gtol` and at most `maxiter` iterations. The minimiser goes into `best`, the gradient there into `jac`. Answers (status, value, nfev, njev, iterations):
 // status 0 converged, 1 `maxiter` reached, 2 the line search failed (scipy's "precision loss"), 3 NaN, 10 + c when the objective failed with code c (`best` is then the point it failed at).
 // One vector of floats holds everything: the line search's (6 n), its scalars (4), dcsrch's state (20), five n x n matrices (H, A1, A2 and two products) and four vectors of n.
-pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &j, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], gtol: float, maxiter: int, best: &!o [float], jac: &!j [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int, int) {
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &j, &t, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], gtol: float, maxiter: int, best: &!o [float], jac: &!j [float], tk: int, tr: &!t [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int, int, int) {
     let n = len(x0);
     let o_sc = 6 * n;
     let o_ds = o_sc + 4;
@@ -457,7 +457,10 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &j, &z](heap: &!h Heap, io: &!i 
     let o_yk = o_gf + n;
     let o_sk = o_yk + n;
     let o_tv = o_sk + n;
-    let wk = box_slice(heap, o_tv + n, 0.0);
+    let o_cur = o_tv + n;
+    let wk = box_slice(heap, o_cur + n + 5, 0.0);
+    var rows = 0;
+    var kept = 0;
     let ibox = box_slice(heap, 8, 0);
     var status = 0;
     var warnflag = 0;
@@ -580,6 +583,28 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &j, &z](heap: &!h Heap, io: &!i 
                             }
                             m = m + 1;
                         }
+                        if tk > 0 {
+                            // scipy's callback, right after the iteration counter moves: the iteration, the evaluations of the value and of the gradient so far, the value, the norm and the point
+                            all[o_cur] = float_of(k);
+                            all[o_cur + 1] = float_of(ib[0]);
+                            all[o_cur + 2] = float_of(ib[1]);
+                            all[o_cur + 3] = old_fval;
+                            all[o_cur + 4] = gnorm;
+                            m = 0;
+                            while m < n {
+                                all[o_cur + 5 + m] = all[m];
+                                m = m + 1;
+                            }
+                            if k == 1 || k % tk == 0 {
+                                m = 0;
+                                while m < n + 5 {
+                                    tr[rows * (n + 5) + m] = all[o_cur + m];
+                                    m = m + 1;
+                                }
+                                rows = rows + 1;
+                                kept = k;
+                            }
+                        }
                         if gnorm <= gtol {
                             stop = true;
                         } else if alpha * max_abs_at(all[0..6 * n], o_pk(n), n) <= 0.0 {
@@ -626,6 +651,15 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &j, &z](heap: &!h Heap, io: &!i 
                         }
                     }
                 }
+                if tk > 0 && k >= 1 && kept != k {
+                    // the last iteration is a row too, once
+                    m = 0;
+                    while m < n + 5 {
+                        tr[rows * (n + 5) + m] = all[o_cur + m];
+                        m = m + 1;
+                    }
+                    rows = rows + 1;
+                }
                 fval = old_fval;
                 var nan = gnorm != gnorm || fval != fval;
                 m = 0;
@@ -661,5 +695,5 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &j, &z](heap: &!h Heap, io: &!i 
     }
     unbox_slice(heap, wk);
     unbox_slice(heap, ibox);
-    return (status, fval, nfev, njev, k);
+    return (status, fval, nfev, njev, k, rows);
 }
