@@ -41,6 +41,16 @@ fn copy_row[&w](ws: &!w [float], from: int, to: int, n: int) -> [] int {
     return 0;
 }
 
+// `count` floats of `ws` from `from` into `out` at `to`
+fn copy_to[&w, &t](ws: &w [float], from: int, out: &!t [float], to: int, count: int) -> [] int {
+    var k = 0;
+    while k < count {
+        out[to + k] = ws[from + k];
+        k = k + 1;
+    }
+    return 0;
+}
+
 // a stable insertion sort of the n + 1 rows by value
 fn sort_rows[&w](ws: &!w [float], n: int, fs: int, row: int) -> [] int {
     var j = 1;
@@ -87,7 +97,7 @@ fn try_at[&h, &i, &x, &c, &p, &a, &w, &z](heap: &!h Heap, io: &!i Io, exec: &x E
 // Minimise from `x0` inside [lower, upper]; the minimiser goes into `best`. A step of 0 is scipy's initial simplex, anything else puts vertex k at
 // x0 + step e_k. `nfev` never exceeds `maxfev`: the evaluation that would is not made and the iteration is abandoned where it stands, as scipy does. Answers (status, value, evaluations, iterations); status 0 converged, 1 `maxfev` reached, 2 `maxiter` reached, 10 + c when the
 // objective failed with code c (see `objective.value`), and `best` is then the point it failed at.
-pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], lower: &l [float], upper: &u [float], step: float, xatol: float, fatol: float, maxfev: int, maxiter: int, best: &!o [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int) {
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o, &t, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], lower: &l [float], upper: &u [float], step: float, xatol: float, fatol: float, maxfev: int, maxiter: int, best: &!o [float], tk: int, tr: &!t [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int, int) {
     let n = len(x0);
     let m = n + 1;
     let fs = m * n;
@@ -98,7 +108,11 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o, &z](heap: &!h Heap, io: 
     let hi = lo + n;
     let row = hi + n;
     let last = row + n;
-    let work = box_slice(heap, last + n, 0.0);
+    let cur = last + n;
+    let work = box_slice(heap, cur + n + 4, 0.0);
+    var rows = 0;
+    var kept = 0;
+    var ncb = 0;
     var status = 0;
     var nfev = 0;
     var nit = 1;
@@ -311,6 +325,37 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o, &z](heap: &!h Heap, io: 
                     if status == 0 || status == 1 {
                         sort_rows(w, n, fs, row);
                     }
+                    if (status == 0 || status == 1) && tk > 0 {
+                        // scipy's callback, after the sort (also when the iteration was abandoned for the budget): the iteration, the evaluations so far, the best value, the size of the simplex and the best vertex
+                        var far2 = 0.0;
+                        var r2 = 1;
+                        while r2 < m {
+                            var j2 = 0;
+                            while j2 < n {
+                                let d2 = absolute(w[r2 * n + j2] - w[j2]);
+                                if d2 > far2 {
+                                    far2 = d2;
+                                }
+                                j2 = j2 + 1;
+                            }
+                            r2 = r2 + 1;
+                        }
+                        ncb = ncb + 1;
+                        w[cur] = float_of(ncb);
+                        w[cur + 1] = float_of(nfev);
+                        w[cur + 2] = w[fs];
+                        w[cur + 3] = far2;
+                        var j3 = 0;
+                        while j3 < n {
+                            w[cur + 4 + j3] = w[j3];
+                            j3 = j3 + 1;
+                        }
+                        if ncb == 1 || ncb % tk == 0 {
+                            copy_to(w, cur, tr, rows * (n + 4), n + 4);
+                            rows = rows + 1;
+                            kept = ncb;
+                        }
+                    }
                 }
             }
         }
@@ -324,7 +369,12 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &l, &u, &o, &z](heap: &!h Heap, io: 
             k = k + 1;
         }
         fun = w[fs];
+        // the last iteration is a row too, once
+        if tk > 0 && ncb >= 1 && kept != ncb {
+            copy_to(w, cur, tr, rows * (n + 4), n + 4);
+            rows = rows + 1;
+        }
     }
     unbox_slice(heap, work);
-    return (status, fun, nfev, nit);
+    return (status, fun, nfev, nit, rows);
 }

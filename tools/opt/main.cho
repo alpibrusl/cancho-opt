@@ -74,7 +74,67 @@ fn refuse_at[&h, &i, &p](heap: &!h Heap, io: &!i Io, rule: &static [byte], messa
     return emit(heap, io, rule, message, repair, point, true);
 }
 
-fn print_result[&h, &i, &b](heap: &!h Heap, io: &!i Io, best: &b [float], fun: float, nfev: int, nit: int, status: int) -> [heap, io_write] int {
+// The trace (docs/design.md section 12): `rows` rows of n + 4 floats (the iteration, the evaluations, the value, the size of the simplex, the best vertex) as the member `"trace"`.
+fn put_trace[&h, &t](heap: &!h Heap, w0: json.Writer, tr: &t [float], rows: int, n: int) -> [heap] json.Writer {
+    var w = w0;
+    w = json.put_key(heap, w, "trace");
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "columns");
+    w = json.begin_array(heap, w);
+    w = json.put_string(heap, w, "iter");
+    w = json.put_string(heap, w, "nfev");
+    w = json.put_string(heap, w, "fun");
+    w = json.put_string(heap, w, "size");
+    var k = 0;
+    while k < n {
+        region r {
+            let name = alloc_slice[r](16, byte_of(0));
+            name[0] = byte_of('x');
+            var digits = 0;
+            var v = k;
+            if v == 0 {
+                name[1] = byte_of(48);
+                digits = 1;
+            }
+            while v > 0 {
+                name[1 + digits] = byte_of(48 + v % 10);
+                digits = digits + 1;
+                v = v / 10;
+            }
+            // the digits were written backwards
+            var a = 0;
+            while a < digits / 2 {
+                let tmp = name[1 + a];
+                name[1 + a] = name[digits - a];
+                name[digits - a] = tmp;
+                a = a + 1;
+            }
+            w = json.put_string(heap, w, name[0..1 + digits]);
+        }
+        k = k + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.put_key(heap, w, "rows");
+    w = json.begin_array(heap, w);
+    var q = 0;
+    while q < rows {
+        w = json.begin_array(heap, w);
+        w = json.put_int(heap, w, truncate(tr[q * (n + 4)]));
+        w = json.put_int(heap, w, truncate(tr[q * (n + 4) + 1]));
+        var c = 2;
+        while c < n + 4 {
+            w = json.put_float(heap, w, tr[q * (n + 4) + c]);
+            c = c + 1;
+        }
+        w = json.end_array(heap, w);
+        q = q + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.end_object(heap, w);
+    return w;
+}
+
+fn print_result[&h, &i, &b, &t](heap: &!h Heap, io: &!i Io, best: &b [float], fun: float, nfev: int, nit: int, status: int, tr: &t [float], rows: int, with_trace: bool) -> [heap, io_write] int {
     var w = json.writer(heap, 256);
     w = json.begin_object(heap, w);
     w = json.put_key(heap, w, "method");
@@ -102,6 +162,9 @@ fn print_result[&h, &i, &b](heap: &!h Heap, io: &!i Io, best: &b [float], fun: f
         w = json.put_string(heap, w, "Maximum number of function evaluations has been exceeded.");
     } else {
         w = json.put_string(heap, w, "Maximum number of iterations has been exceeded.");
+    }
+    if with_trace {
+        w = put_trace(heap, w, tr, rows, len(best));
     }
     w = json.end_object(heap, w);
     let out = buffer.push(heap, json.finish(w), byte_of(10));
@@ -265,7 +328,7 @@ fn has_flag[&g](args: &g Args, stop: int, name: &static [byte]) -> [args] bool {
 
 // is `name` one of the flags `minimize` takes?
 fn known(name: &static [byte]) -> [] bool {
-    return bytes.equal(name, "--method") || bytes.equal(name, "--x0") || bytes.equal(name, "--lower") || bytes.equal(name, "--upper") || bytes.equal(name, "--step") || bytes.equal(name, "--xatol") || bytes.equal(name, "--fatol") || bytes.equal(name, "--maxfev") || bytes.equal(name, "--maxiter") || bytes.equal(name, "--gtol") || bytes.equal(name, "--objective") || bytes.equal(name, "--a") || bytes.equal(name, "--c") || bytes.equal(name, "--stability") || bytes.equal(name, "--seed") || bytes.equal(name, "--lr") || bytes.equal(name, "--beta1") || bytes.equal(name, "--beta2") || bytes.equal(name, "--eps") || bytes.equal(name, "--timeout-ms");
+    return bytes.equal(name, "--method") || bytes.equal(name, "--x0") || bytes.equal(name, "--lower") || bytes.equal(name, "--upper") || bytes.equal(name, "--step") || bytes.equal(name, "--xatol") || bytes.equal(name, "--fatol") || bytes.equal(name, "--maxfev") || bytes.equal(name, "--maxiter") || bytes.equal(name, "--gtol") || bytes.equal(name, "--objective") || bytes.equal(name, "--a") || bytes.equal(name, "--c") || bytes.equal(name, "--stability") || bytes.equal(name, "--seed") || bytes.equal(name, "--lr") || bytes.equal(name, "--beta1") || bytes.equal(name, "--beta2") || bytes.equal(name, "--eps") || bytes.equal(name, "--timeout-ms") || bytes.equal(name, "--trace");
 }
 
 fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, args: &g Args) -> [heap, io_write, err_write, exec(""), clock, poll, args, pipe_write, pipe_read, child_signal] int {
@@ -285,7 +348,7 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
             k = k + 1;
         } else {
             if !known(arg(args, k)) {
-                return refuse(heap, io, "opt.unknown-flag", "an argument is not a flag of `opt minimize`", "the flags are --x0 --objective --method --lower --upper --step --xatol --fatol --maxfev --maxiter --gtol --a --c --stability --seed --lr --beta1 --beta2 --eps --persistent --timeout-ms, then `-- PROGRAM ARGS`");
+                return refuse(heap, io, "opt.unknown-flag", "an argument is not a flag of `opt minimize`", "the flags are --x0 --objective --method --lower --upper --step --xatol --fatol --maxfev --maxiter --gtol --a --c --stability --seed --lr --beta1 --beta2 --eps --persistent --timeout-ms --trace, then `-- PROGRAM ARGS`");
             }
             if k + 1 >= stop {
                 return refuse(heap, io, "opt.usage", "a flag has no value", "write each flag as `--name VALUE`");
@@ -354,6 +417,10 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
         }
     } else if has_gt {
         return refuse(heap, io, "opt.flag-not-for-method", "--gtol is BFGS's flag", "give --method bfgs, or use --xatol and --fatol for Nelder-Mead");
+    }
+    let (has_tr, tr_text) = flag(args, stop, "--trace");
+    if has_tr && (is_spsa || is_adam || is_bfgs) {
+        return refuse(heap, io, "opt.flag-not-for-method", "--trace is built for nelder-mead only so far", "leave --trace out, or use --method nelder-mead (docs/design.md section 12)");
     }
     let (has_x0, x0_text) = flag(args, stop, "--x0");
     if !has_x0 {
@@ -597,6 +664,26 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
         } else if maxiter < 0 {
             maxiter = 1000000000;
         }
+        // the trace: a row for every K-th iteration, the first and the last; at most 4,999 rows (docs/design.md section 12)
+        var tk = 0;
+        var trows_max = 1;
+        if has_tr {
+            tk = lists.natural(tr_text);
+            if tk < 1 || tk > 1000 {
+                status = refuse(heap, io, "opt.usage", "--trace is not an integer from 1 to 1000", "e.g. --trace 1 for every iteration");
+            } else {
+                var bound = maxiter;
+                if maxfev < bound {
+                    bound = maxfev;
+                }
+                trows_max = (bound + tk - 1) / tk + 1;
+                if trows_max > 4999 {
+                    status = refuse(heap, io, "opt.trace-too-long", "the run could keep more than 4999 rows of the trace", "give a larger --trace K, or a smaller --maxiter or --maxfev");
+                }
+            }
+        }
+        let trace = box_slice(heap, trows_max * (n + 4), 0.0);
+        var trows = 0;
         // the program: its name, and its arguments each followed by a NUL
         var program = arg(args, 0)[0..0];
         var argv = buffer.empty(heap, 16);
@@ -658,11 +745,14 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
                                                 nit = itb;
                                             }
                                         } else {
-                                            let (sn, fn2, fen, itn) = nm.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), contents(lr), contents(ur), step, xatol, fatol, maxfev, maxiter, contents(bw));
-                                            st = sn;
-                                            fun = fn2;
-                                            nfev = fen;
-                                            nit = itn;
+                                            borrow mut trace as &!tw in {
+                                                let (sn, fn2, fen, itn, rwn) = nm.minimize(heap, io, exec, clock, lk, kind, program, buffer.bytes(ar), contents(xr), contents(lr), contents(ur), step, xatol, fatol, maxfev, maxiter, contents(bw), tk, contents(tw));
+                                                st = sn;
+                                                fun = fn2;
+                                                nfev = fen;
+                                                nit = itn;
+                                                trows = rwn;
+                                            }
                                         }
                                     }
                                 }
@@ -706,7 +796,9 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
                         print_bfgs(heap, io, contents(br), contents(jr), fun, nfev, njev, nit, code);
                     }
                 } else {
-                    print_result(heap, io, contents(br), fun, nfev, nit, code);
+                    borrow trace as &tq in {
+                        print_result(heap, io, contents(br), fun, nfev, nit, code, contents(tq), trows, tk > 0);
+                    }
                 }
             }
             if code != 0 {
@@ -714,6 +806,7 @@ fn minimize_command[&h, &i, &x, &c, &g](heap: &!h Heap, io: &!i Io, exec: &x Exe
             }
         }
         buffer.drop(heap, argv);
+        unbox_slice(heap, trace);
     }
     unbox_slice(heap, x0);
     unbox_slice(heap, lower);
