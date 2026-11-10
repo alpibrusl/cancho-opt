@@ -26,7 +26,7 @@ fn draw[&r](rng: &!r [int]) -> [] float {
 
 // Run `maxiter` iterations from `x0` with gains a, c and stability constant `big_a`; the final point goes into `best`. Answers (status, value there, evaluations, iterations):
 // status 0 when it ran its iterations, 10 + c when the objective failed with code c (see `objective.value`), and `best` is then the point it failed at.
-pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], maxiter: int, gain: float, pert: float, big_a: float, seed: int, best: &!o [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int) {
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &t, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], maxiter: int, gain: float, pert: float, big_a: float, seed: int, best: &!o [float], tk: int, tr: &!t [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int, int) {
     let n = len(x0);
     let delta = n;
     let trial = delta + n;
@@ -36,6 +36,7 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &z](heap: &!h Heap, io: &!i Io, 
     var nfev = 0;
     var nit = 0;
     var fun = 0.0;
+    var rows = 0;
     borrow mut rng as &!rr in {
         borrow mut work as &!ww in {
             let w = contents(ww);
@@ -85,6 +86,14 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &z](heap: &!h Heap, io: &!i Io, 
                             k = k + 1;
                         }
                         nit = it;
+                        if tk > 0 && (it == 1 || it % tk == 0 || it == maxiter) {
+                            // a row of the trace: the iteration, the evaluations so far and the two gains of the step (docs/design.md section 12)
+                            tr[rows * 4] = float_of(it);
+                            tr[rows * 4 + 1] = float_of(nfev);
+                            tr[rows * 4 + 2] = ak;
+                            tr[rows * 4 + 3] = ck;
+                            rows = rows + 1;
+                        }
                     }
                 }
                 it = it + 1;
@@ -116,5 +125,5 @@ pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &z](heap: &!h Heap, io: &!i Io, 
     }
     unbox_slice(heap, work);
     unbox_slice(heap, rng);
-    return (status, fun, nfev, nit);
+    return (status, fun, nfev, nit, rows);
 }
