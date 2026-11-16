@@ -22,7 +22,7 @@ import qiskit_algorithms.optimizers.spsa as spsa_module
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 OPT = os.environ.get("OPT", os.path.join(ROOT, "build", "opt"))
-SRC = ["lib/nm/objective.cho", "lib/nm/lists.cho", "lib/nm/nm.cho", "lib/bfgs/dcsrch.cho", "lib/bfgs/bfgs.cho", "lib/spsa/spsa.cho", "tools/opt/main.cho"]
+SRC = ["lib/nm/objective.cho", "lib/nm/lists.cho", "lib/nm/nm.cho", "lib/bfgs/dcsrch.cho", "lib/bfgs/bfgs.cho", "lib/spsa/spsa.cho", "lib/adam/adam.cho", "lib/persist/persist.cho", "tools/opt/main.cho"]
 M = (1 << 64) - 1
 
 FUNCTIONS = {
@@ -184,7 +184,7 @@ MUTANTS = [
     ("lib/spsa/spsa.cho", "w[k] = w[k] - ak * estimate;", "w[k] = w[k] + ak * estimate;", "step sign"),
     ("lib/spsa/spsa.cho", "w[trial + k] = w[k] - ck * w[delta + k];", "w[trial + k] = w[k] - ck * w[delta + k] * 0.5;", "minus probe size"),
     ("lib/spsa/spsa.cho", "s = s ^ s << 25;", "s = s ^ s << 24;", "generator shift"),
-    ("lib/spsa/spsa.cho", "let (c3, f) = objective.value(heap, io, exec, clock, kind, exe, argv, w[0..n]);", "let (c3, f) = objective.value(heap, io, exec, clock, kind, exe, argv, w[trial..trial + n]);", "final evaluation point"),
+    ("lib/spsa/spsa.cho", "let (c3, f) = objective.value(heap, io, exec, clock, link, kind, exe, argv, w[0..n]);", "let (c3, f) = objective.value(heap, io, exec, clock, link, kind, exe, argv, w[trial..trial + n]);", "final evaluation point"),
     ("lib/spsa/spsa.cho", "let rng = box_slice(heap, 1, seed);", "let rng = box_slice(heap, 1, seed + 1);", "seed"),
 ]
 

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<!-- Written by scripts/gen_stories.py from real runs of opt; do not edit by hand (docs/design.md section 13). -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cancho-opt stories: what opt did on small problems</title>
+<meta name="description" content="Small problems fitted with opt, each a real run: a convex fit, XOR from eight starts, a noisy loss, a loss with corners, a wrong gradient.">
+<meta name="color-scheme" content="light dark">
+<link rel="canonical" href="https://alpibrusl.github.io/cancho-opt/stories.html">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top"><div class="wrap">
+  <a class="brand" href="index.html">cancho-opt</a>
+  <nav aria-label="Site">
+    <a href="index.html#how" class="opt">How it works</a><a href="stories.html" aria-current="page">Stories</a><a href="index.html#results" class="opt">Evidence</a><a href="index.html#try">Try it</a><a href="index.html#docs" class="opt">Docs</a><a href="https://github.com/alpibrusl/cancho-opt">GitHub</a>
+  </nav>
+</div></header>
+<main id="main">
+<section id="stories" style="border-top:0">
+  <div class="center"><h1>What opt did on small problems.</h1>
+  <p class="sub">Each story is a real run of <code>opt</code>, written into this page by <code>scripts/gen_stories.py</code>, with what it shows and what it does not. The data are invented and seeded; none of it measures the world. Numbers are rounded to six significant digits; the runs were made on Linux x86-64.</p></div>
+  <div class="stories">
+  <article class="story" id="convex"><h3>Eight points no line separates</h3>
+<p>Logistic regression on eight invented points (two features), with a small ridge so the answer is unique and its gradient written out. <code>opt</code> asks the program for the loss and the gradient at a point and runs BFGS.</p>
+<pre class="code">$ opt minimize --method bfgs --x0 0,0,0 -- python3 examples/train/logistic.py
+{"method":"bfgs","x":[2.28644,2.41774,2.04962e-16],"fun":0.230847,"nfev":15,"converged":true}</pre>
+<p>It converged in <b>15</b> evaluations to a loss of <b>0.230847</b>. A Newton solve of the same loss, written separately (<code>examples/train/reference.py</code>), gives 0.230847: they differ by 7.6e-13. The largest gradient component at the answer is 3.0e-07.</p>
+<p class="note"><b>Shows:</b> BFGS on a convex problem reaching the answer an independent method reaches, with the evaluations counted. <b>Does not show:</b> that this is the right model, only the minimum of this loss; or any other data.</p>
+  </article>
+  <article class="story" id="xor"><h3>XOR: converged is not solved</h3>
+<p>A 2-2-1 sigmoid network (nine parameters) on XOR, cross-entropy loss, backpropagation written by hand. Eight fixed starting points, BFGS from each.</p>
+<pre class="code">$ opt minimize --method bfgs --x0 &lt;start&gt; -- python3 examples/train/mlp_xor.py</pre>
+<div class="tablewrap"><table><thead><tr><th class="num">start</th><th class="num">final loss</th><th class="num">evaluations</th><th>converged</th><th>solved XOR</th></tr></thead><tbody><tr><td class="num">1</td><td class="num">0.4774</td><td class="num">68</td><td>yes</td><td class="no">no</td></tr><tr><td class="num">2</td><td class="num">0.4774</td><td class="num">33</td><td>yes</td><td class="no">no</td></tr><tr><td class="num">3</td><td class="num">0.3466</td><td class="num">48</td><td>yes</td><td class="no">no</td></tr><tr><td class="num">4</td><td class="num">0.4774</td><td class="num">43</td><td>yes</td><td class="no">no</td></tr><tr><td class="num">5</td><td class="num">7.739e-06</td><td class="num">30</td><td>yes</td><td class="yes">yes</td></tr><tr><td class="num">6</td><td class="num">0.4774</td><td class="num">27</td><td>yes</td><td class="no">no</td></tr><tr><td class="num">7</td><td class="num">0.3466</td><td class="num">49</td><td>yes</td><td class="no">no</td></tr><tr><td class="num">8</td><td class="num">0.4774</td><td class="num">34</td><td>yes</td><td class="no">no</td></tr></tbody></table></div>
+<p><code>converged</code> was true from <b>8</b> of the 8 starts and the network classified all four points from <b>1</b>. The others stopped at a local minimum, where the gradient is zero and the loss is not.</p>
+<p class="note"><b>Shows:</b> that <code>converged</code> means the gradient is small, not that the model is right; a network has local minima that a convex fit does not. <b>Does not show:</b> how often random starts succeed (eight fixed ones are not a sample), or anything about larger networks.</p>
+  </article>
+  <article class="story" id="noisy"><h3>A loss you can only sample</h3>
+<p>The logistic loss estimated on five of the eight points, drawn from a hash of the point (so a run is reproducible, and the value is noisy). No gradient is printed. SPSA needs two evaluations an iteration whatever the dimension.</p>
+<pre class="code">$ opt minimize --method spsa --x0 0,0,0 --maxiter 300 -- python3 examples/train/noisy_logistic.py
+{"method":"spsa","x":[0.864419,0.176083,-0.140115],"fun":0.591315,"nfev":601,"nit":300,"completed":true}</pre>
+<p>The <code>fun</code> it prints is one noisy sample. The <b>true</b> loss, computed here from the full data, went from <b>0.6931</b> at the start to <b>0.376</b> at the answer; the best possible is 0.2308. It moved the right way and had not arrived after 300 iterations (601 evaluations).</p>
+<p class="note"><b>Shows:</b> SPSA lowering a noisy loss with no gradient. <b>Does not show:</b> that SPSA converges well on any problem (<a href="https://github.com/alpibrusl/cancho-opt/blob/main/docs/design.md">design.md</a> section 11 says what is and is not claimed).</p>
+  </article>
+  <article class="story" id="corners"><h3>A loss with corners</h3>
+<p>A two-unit ReLU network fitted to <code>|x|</code> on nine points. <code>max(0, z)</code> has no derivative at 0, so the program prints a value only, and Nelder-Mead needs nothing more.</p>
+<pre class="code">$ opt minimize --x0 0.5,0.1,-0.5,0.1,0.8,0.8,0 --maxfev 4000 -- python3 examples/train/relu_fit.py
+{"method":"nelder-mead","fun":1.42651e-13,"nfev":2039,"converged":true}</pre>
+<p>Loss <b>1.43e-13</b> after <b>2039</b> evaluations, converged: true.</p>
+<p class="note"><b>Shows:</b> a derivative-free method on a loss a gradient method cannot take. <b>Does not show:</b> that the simplex finds the global minimum from other starts (one start was run).</p>
+  </article>
+  <article class="story" id="gradient"><h3>Check the gradient before you trust BFGS</h3>
+<p><code>examples/train/gradcheck.py</code> compares a program's gradient with central differences at a point. Three versions of the logistic program, checked at (0.3, -0.2, 0.1) and then given to BFGS from the origin; the best possible loss is 0.23085.</p>
+<div class="tablewrap"><table><thead><tr><th>version</th><th class="num">largest relative disagreement</th><th>gradcheck</th><th>BFGS converged</th><th class="num">evaluations</th><th class="num">loss reached</th></tr></thead><tbody><tr><td>the program as it is</td><td class="num">8.8e-11</td><td>passes</td><td>yes</td><td class="num">15</td><td class="num">0.23085</td></tr><tr><td>the bias gradient doubled</td><td class="num">2.4e-02</td><td>flags it</td><td>yes</td><td class="num">15</td><td class="num">0.23085</td></tr><tr><td>the ridge term missing from the gradient</td><td class="num">3.0e-03</td><td>flags it</td><td>no (desired error not necessarily achieved due to precision loss)</td><td class="num">72</td><td class="num">0.25796</td></tr></tbody></table></div>
+<p>The check flags both wrong versions. BFGS shows only one of them: with the bias gradient doubled, the gradient still vanishes where the true one does (the true bias gradient is zero at the optimum), so BFGS converged to the right answer anyway. With the ridge term missing, the loss and its gradient disagree, the line search fails, and BFGS stops with a loss above the optimum (exit status 1).</p>
+<p class="note"><b>Shows:</b> that a wrong gradient can look fine or fail depending on where it is wrong, and that the check finds both. <b>Does not show:</b> that a gradient which passes at one point is right everywhere.</p>
+  </article>
+  <article class="story" id="kernels"><h3>A model whose loss is computed by GPU kernels <span class="tag">not run by this page's generator</span></h3>
+<p>A least-squares fit whose loss and gradient are computed by <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">cancho-gpu</a> kernels (<code>cancho-gpu run</code>), driven by <code>opt minimize --method bfgs</code>: the objective is a program that calls those kernels twice and prints the loss and the gradient.</p>
+<pre class="code">$ opt minimize --method bfgs --x0 0,0,0 -- python3 examples/train/lsq_objective.py &lt;cancho-gpu&gt; &lt;checkout&gt;</pre>
+<p>It converged in 12 evaluations to within 1.1e-5 of the normal-equations solution, at 28 to 36 ms an evaluation over three runs. <b>This story is not run by this page's generator</b>: it needs cancho-gpu's binary. The numbers are those of cancho-gpu's own check (<code>scripts/check_train.py</code>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">run.md</a> section 6).</p>
+<p class="note"><b>Shows:</b> a kernel as an optimiser's objective. <b>Does not show:</b> anything on a GPU (the device programs do not take input yet), more than 32 parameters (the limit of <code>opt</code>), or a speed claim.</p>
+  </article>
+  </div>
+</section>
+</main>
+<footer><div class="wrap">
+  <span>cancho-opt &middot; EUPL-1.2 &middot; written in <a href="https://github.com/alpibrusl/cancho">cancho</a></span>
+  <a href="https://github.com/alpibrusl/cancho-opt">GitHub</a><a href="llms.txt">llms.txt</a>
+  <span>the sibling tools: <a href="https://github.com/alpibrusl/cancho-stats">stats</a>, <a href="https://github.com/alpibrusl/cancho-table">table</a>, <a href="https://github.com/alpibrusl/cancho-ml">ml</a>, <a href="https://github.com/alpibrusl/cancho-gpu">gpu</a></span>
+</div></footer>
+</body>
+</html>

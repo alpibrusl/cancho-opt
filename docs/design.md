@@ -14,6 +14,7 @@ Every claim below is **measured** (with the command that measures it), a **choic
 | `opt minimize --method nelder-mead` | built (this document) |
 | `opt minimize --method bfgs` | built (section 9) |
 | `opt minimize --method spsa` | built (section 11) |
+| `opt minimize --persistent` | built (section 14): the program is started once and answers a line for each line |
 | `opt minimize --method lm` (Levenberg-Marquardt, least squares) | **open**: needs an objective that returns residuals, a different protocol (section 4) |
 | `opt root`, `opt curve-fit`, gradient methods (BFGS, L-BFGS-B) | **open**, not needed by anything yet; they are written when a program needs them |
 
@@ -89,7 +90,7 @@ evaluations.
 |---|---|
 | `opt.usage` | no or unknown command, a flag without a value, no `--x0`, no objective or two |
 | `opt.unknown-flag` | a flag `minimize` does not take |
-| `opt.unknown-method` | `--method` other than `nelder-mead` |
+| `opt.unknown-method` | `--method` other than `nelder-mead`, `bfgs`, `spsa` and `adam` |
 | `opt.bad-number` | `--x0`, `--lower`, `--upper`, `--step`, `--xatol`, `--fatol`, `--maxfev` or `--maxiter` is not a number of the right kind |
 | `opt.bounds-length` | `--lower` or `--upper` does not have as many numbers as `--x0` |
 | `opt.bounds-order` | a lower bound above its upper bound |
@@ -205,6 +206,129 @@ README), the choice of the defaults beyond "order one", blocking, second-order S
 about 55 to 65 microseconds an iteration in Python. **What it does not show** is the same as in section 10: a built-in objective runs inside `opt`; a program objective costs the 1.2 ms of a process start per evaluation, which is what dominates the
 sampled VQE (1,601 evaluations in 2.3 s, `cancho-quantum` `docs/benchmark.md`). For an objective that is cheap and in Python, Qiskit's SPSA in-process is the faster way to call it.
 
+## 12. Examples: training a model with `opt` (written before the examples; gates, then measured numbers)
+
+Fitting a model is minimising a loss over its parameters, and the objective of section 4 is a program that is given the parameters and
+prints the loss (and, for `--method bfgs`, the gradient). `examples/train/` holds one program for each way that is used, and
+`scripts/check_examples.py` runs every one and fails if its claim does not hold, so the README of the examples cannot drift from the code.
+They need `python3` and nothing else (the standard library). **Measured while writing them:** `opt` starts the program it is given by that name, without searching `PATH`, so a bare `python3` is `opt.objective-failed` and the commands name the interpreter by absolute path; the environment it gives the program is `PATH` and `HOME=/tmp` (section 4).
+
+| Use case | Method | Program | Claim the gate checks |
+|---|---|---|---|
+| a convex fit with an exact gradient | `bfgs` | `logistic.py`, 3 parameters | converged, largest gradient component below `gtol`, and the loss equal to an independent Newton solve to 1e-9 (measured: 15 evaluations, 2.95e-7, 7.6e-13 apart) |
+| a small network by backpropagation | `bfgs` | `mlp_xor.py`, 9 parameters | at least one of a fixed list of 8 starts classifies the four points, and **the starts that do not are reported, not hidden**: measured, 1 of 8 solves it and 7 of 8 report `converged` at a local minimum (a network has local minima; a convex fit has none) |
+| a gradient that cannot be written down, or a loss that is noisy | `spsa` | `noisy_logistic.py`, 3 parameters | the loss falls below a bound that the start is above; **not** that SPSA reaches the optimum (section 11); measured, the true loss goes from 0.693 to 0.376 in 300 iterations, the optimum being 0.231 |
+| a loss with a corner, so no gradient | `nelder-mead` | `relu_fit.py`, 7 parameters | a ReLU network fits `|x|` on a grid to a stated tolerance (measured: 1.4e-13 in 2,039 evaluations) |
+| trusting a gradient before using it | none (a check) | `gradcheck.py` | every program that prints a gradient agrees with central differences to 1e-6, and a deliberately wrong gradient fails |
+
+**Choices.** The programs are Python because the objective is a program and the repository's own gates are Python; they are examples of
+the protocol, not part of `opt`. 32 parameters is the limit of `opt` (section 5), so these are small networks; the cost of a program
+objective is a process start per evaluation (section 10), so they are not an answer for a network with millions of parameters.
+
+**Open.** An objective computed by a cancho-gpu kernel: `cancho-gpu check --run` takes no input (its tensors are the interpreter's own
+made-up ones), so a kernel cannot be given parameters from a command line; docs/training.md of cancho-gpu records what it would take.
+
+## 13. The landing page and the stories (written before the generator; gates, then measured numbers)
+
+The page follows cancho-www's `docs/landing-pattern.md` (the ids `why`, `stories`, `how`, `watch`, `status`, `results`, `try`, `agent`, `docs` in that
+order, a Stories link in the header, the footer) and takes its structure from cancho-ml's page. Every figure and every printed run on it is **written by
+`scripts/gen_stories.py` from a real run of `opt`**, not typed: the region `<!--stories-->` of `docs/index.html`, the region `<!--run:watch-->`, and the whole of
+`docs/stories.html` are its output.
+
+**The stories** are invented and seeded (eight points, a 2-2-1 network, a ReLU, a noisy sample), say so, and each says what it shows and what it does not:
+a convex fit, XOR from eight starts, a noisy loss with SPSA, a loss with corners with Nelder-Mead, and a wrong gradient. One more is **not** run by the generator
+(it needs cancho-gpu's binary) and is marked as such with the figures of cancho-gpu's own check.
+
+| Gate | What it requires | Can it fail? |
+|---|---|---|
+| `python3 scripts/gen_stories.py --check` | the page, the stories page and the run replay equal what a fresh run of `build/opt` prints, rounded as the generator rounds them | yes: edit a number in either page, or change an example |
+| `python3 scripts/check_landing.py` | the ids of the pattern in order, a Stories link in the header, the stories region, one `<h1>`, a title and description inside the SEO limits, every in-page link names an id, every relative link is a file, no external request | yes |
+| the claims about scipy and Qiskit | **not** rerun by these gates: they are the runs of sections 2, 9 and 11, reported there, made by hand on the maintainer's machine; this container has no scipy | not applicable |
+
+**Choices.** The stories use Python objectives, as `examples/train/`; the numbers are rounded to six significant digits, so a different libm that changes
+the last bits does not fail `--check` (an iteration count that changes would, and would be a finding). The stories are checked on one platform, Linux x86-64.
+
+## 14. A persistent objective (`--persistent`)
+
+> **Order, honestly.** `CLAUDE.md` asks for the design before the code. The protocol below was first written in cancho-gpu's `docs/resident.md` section 4
+> (the reason for it); the code was then written in this change and this section, and `scripts/check_persistent.py`, were written to the code as it
+> stood, and the gate was run against deliberate bugs afterwards (below). The gates are still ones that fail: each of the eight mutants fails one.
+
+Section 4's objective is a program started for each point. That costs a process start per evaluation (section 10), and for a program that holds
+state worth keeping (a compiled kernel and data on a GPU, a simulator that has loaded its model) it repeats work whose result never changes.
+`opt minimize --persistent [--timeout-ms N] … -- PROGRAM ARG…` starts the program **once**, and for each point writes one line and reads one line.
+
+* **The protocol is section 4's, with a line instead of a process.** The request is the point, numbers in the shortest form that reads back,
+  separated by single spaces, one newline. The answer is one line: for Nelder-Mead and SPSA one number; for BFGS the value and then the gradient,
+  n + 1 numbers (the same parsing and the same finiteness check as the per-process program). The program's standard input closing is the end.
+* **Choices.** Its standard error is discarded (the per-process mode reads and drops it too, so nothing is lost, and a program that writes a
+  lot of it cannot block). The environment is `PATH` and `HOME=/tmp` as before. An answer is at most 65,536 bytes. **One answer per request:**
+  anything after the first newline is `opt.objective-output`, since a program that answers twice would be one answer behind from then on.
+  `--timeout-ms N` (default 3,600,000, the per-process mode's limit) bounds the wait for each answer. At the end `opt` closes the program's
+  input, waits **five seconds** for it to exit, and kills it if it has not; its exit status is not looked at, because every answer asked for has been read.
+* **No new rule tag.** The program ending, closing its output, being too slow, or not being startable is `opt.objective-failed` (with the point);
+  an answer that is not what the method needs, or has a second line, is `opt.objective-output`; an infinite one `opt.objective-not-finite`.
+  `--persistent` with a built-in objective, or `--timeout-ms` without `--persistent`, is `opt.usage`; a `--timeout-ms` that is not a positive
+  integer is `opt.bad-number`. (`NaN` is not a number to the reader, so it is `opt.objective-output`, as it is without `--persistent`.)
+* **Authority** is unchanged: `exec` and a clock, and the pipes of the child it starts. `opt` reads no file.
+* **Implementation.** `lib/persist/persist.cho` holds the child, its two pipes and an event poller in one value (`Link`), threaded through the
+  three methods as an `Option` that is empty for every other objective; `nm`, `bfgs` and `spsa` are otherwise unchanged. It builds with the
+  compiler written in cancho alone (`CANCHO_COMPILER=auto`, no fallback to the Rust one) once two constructs it has no code for are avoided: a
+  `match` on an enum whose arm assigns `Some(l)` to an outer variable, and an `Option` assigned over an `Option`.
+
+**Measured** (`OPT=build/opt python3 scripts/check_persistent.py`, cancho `a49ea779` built with `CANCHO_COMPILER=auto`, Apple M4 Max, Python 3.14.5
+as the program): 19 checks pass, and the 8 mutants (`--mutants`) are all killed. (1) Nelder-Mead (two cases, one with bounds), BFGS and SPSA print
+**byte for byte** what they print with a process for each point. (2) The program is started once for 159 evaluations, against 159 times.
+(3) A program sees its input close; one that ignores that is killed after 5.0 s and is gone. (4) Ten refusals, each with its tag, and no program
+left running after them. (5) **159 evaluations of Rosenbrock take 0.02 to 0.03 s through a persistent program and 2.7 to 2.9 s with a process each**
+(about 100 times; the per-process time is Python's start-up, 17 ms an evaluation, so with a program whose start is cheaper the ratio is smaller). The existing
+checks are unchanged: `check_cli.py` 56 ok, `check_examples.py` 10 ok, `check_scipy.py` and `check_bfgs.py` 65 runs each, bit for bit.
+
+**Mutants** (each fails the check): a second line not noticed; the timeout not applied (twice: in the link and in the flag); the program's
+input closed only after the wait; a program that ignores the end not killed; a closed output not an error; the last character of the answer
+dropped; `--timeout-ms 0` accepted. **A mutant that survived the first set** was the newline read as part of the answer: it is equivalent (the
+number reader ignores trailing white space), so it was replaced by the last character dropped. A mutant that did not build (the input
+never closed: the pipe is then not consumed, a linear-value error) was replaced by closing it late.
+
+**Open.** A program that writes its answer in several writes with pauses is waited for up to the timeout, not checked for progress. A request
+longer than the pipe holds (about 8 KiB on macOS, with 32 parameters a request is under 1 KiB) is a refusal and not a split write. The
+`NaN`/`inf` text a Python `print(float('nan'))` writes is `opt.objective-output`, not `opt.objective-not-finite`. Whether `opt` should hold
+several persistent programs (for a team of evaluations in parallel) is not asked by anything.
+
+## 15. Adam (`--method adam`)
+
+> **Order.** This section is written before `lib/adam/adam.cho`, `scripts/check_adam.py` and the changes to `tools/opt/main.cho`. Where it says "measured" the number is added after the code runs, and a claim found false is
+> corrected here.
+
+Adam (Kingma and Ba 2015) is the optimiser that models are trained with when the loss is a sum over a sample and each evaluation sees a different sample, as the noisy logistic loss of `examples/train/noisy_logistic.py` does: it needs the
+gradient of that sample (BFGS's line search does not survive the noise; SPSA throws the gradient away and takes two evaluations an iteration whatever the dimension). One evaluation per iteration, 3 n numbers of state.
+
+**The method.** `--method adam --x0 LIST (--objective sphere|rosenbrock|quadratic | -- PROGRAM…) [--maxiter N] [--lr A] [--beta1 B] [--beta2 B] [--eps E]`. The objective is BFGS's (section 9): the value and then the gradient. Defaults: 100 iterations,
+`lr` 0.001, `beta1` 0.9, `beta2` 0.999, `eps` 1e-8 (the paper's, and PyTorch's). Iteration t = 1, 2, …: evaluate the gradient g at x; then, elementwise,
+
+```
+m  = m + (g - m) (1 - beta1)            (when 1 - beta1 >= 0.5: g - (g - m) beta1)
+v  = v beta2 + ((1 - beta2) g) g
+x  = x - (lr / (1 - beta1^t)) m / (sqrt(v) / sqrt(1 - beta2^t) + eps)
+```
+
+which is the order of operations of `torch.optim.Adam` (single tensor, no weight decay, no amsgrad) so that the two can be compared. **One difference, chosen**: `beta^t` is the running product `b = b beta` (one multiplication an iteration), not
+`pow`, which `std.math` and the C library may round differently in the last place (section 11 found that for SPSA); the product is the same on every platform. A final evaluation at the last x gives `fun` and `jac`; `nfev` = `njev` = `nit + 1`.
+**There is no convergence test** (as SPSA): the result says `"completed": true`, exit status 0. The flags of the other methods are `opt.flag-not-for-method`, as Adam's are for them; `absolute` is `opt.no-gradient`; a non-positive `--lr`,
+`--eps`, or a `--beta` outside [0, 1) is `opt.bad-number`. At most 32 parameters, like every method (section 5).
+
+**What is claimed, and how it is measured (`scripts/check_adam.py`).** (1) **Bit for bit** against a Python float64 implementation of the formulas above, with the same running products, on the three built-in objectives and on a program objective, in 1 to 8
+dimensions, from several starts, with the defaults and with other `lr`, `beta`, `eps` (both branches of the first line), for 1 to 300 iterations: the same `x`, `fun` and `jac` (printed in the shortest form that reads back, so equal text is equal bits).
+(2) **Against `torch.optim.Adam`** in float64 on the same problems: the same `x` to a relative 1e-9 after 100 iterations (not bit for bit: the vectorised kernels of PyTorch, and its use of `pow`, differ from the formulas in the last places; the chaos of Rosenbrock
+would magnify that over many iterations, so the test uses the smoother objectives for 100 and Rosenbrock for 20). (3) The mutants listed in the script are all killed. **Measured** (`OPT=build/opt python3 scripts/check_adam.py --mutants`, cancho `a49ea779` built with `CANCHO_COMPILER=auto`, Apple M4 Max, Python 3.14.5, torch 2.12): **11 of 11 runs equal the reference bit for bit** (`x`, `fun`, `jac`,
+`nit`, `nfev`), `--persistent` gives byte for byte the result of a process for each point, **the worst relative difference from `torch.optim.Adam` is 1.0e-15** (sphere, quadratic and logistic after 100 iterations, Rosenbrock after 20), and all **9 mutants are killed**
+(the first-moment weight, a missing factor of g, no bias correction of either moment, the root left out, no eps, the sign, the other branch of the first moment, the running product of beta2, the final evaluation). The existing checks are unchanged: `check_cli.py`
+(now with 20 Adam cases), `check_examples.py` (with two for Adam), `check_bfgs.py` and `check_scipy.py` 65 runs each bit for bit; `check_spsa.py` needs qiskit-algorithms, which this machine does not have. **On a noisy loss** (`examples/train/README.md` 3b) Adam reaches a true
+loss of 0.2322 (optimum 0.2308) in 301 evaluations where SPSA, with 601, is at 0.3870.
+
+**Not claimed:** that Adam converges on any problem, a good default for `lr`
+(it is the number to tune), weight decay, AMSGrad, a learning-rate schedule, gradient clipping.
+
 ## 7. Open
 
 * Levenberg-Marquardt and a residual protocol (section 1).
@@ -212,3 +336,48 @@ sampled VQE (1,601 evaluations in 2.3 s, `cancho-quantum` `docs/benchmark.md`). 
 * Whether `opt` should link the pinned cancho-tools contract package as `ml` and `stats` do. It does not yet: this first slice has no
   dependency, so it builds with the compiler it names and nothing else; the cost is that its refusals are written by hand in the
   contract's shape and not by its module.
+
+## 12. A trace of the iterations (built for Nelder-Mead, BFGS and SPSA; Adam has none)
+
+**Why.** `opt minimize` prints only where it ended (`x`, `fun`, `nfev`, `nit`, `converged`). Measured 2026-11-10 (Nelder-Mead on Rosenbrock from (-1.2, 1), a build at the pin): 85 iterations and 159 evaluations
+are in the answer as two numbers, and the way `fun` fell to 8.2e-10 is not. A convergence plot (`fun` by iteration, the step, the gradient norm) is what a person or an agent reads to see whether to trust a result, and
+[cancho-plot](https://github.com/alpibrusl/cancho-plot) (`plot --x iter --y fun`) draws any table with a row for each step. This section says how `opt` would hand that table over without a new authority.
+
+**Choice: a `trace` member of the one JSON object, off unless asked.** `--trace K` (K from 1 to 1,000; absent is off) adds, after `message`:
+
+    "trace": {"columns": ["iter", "nfev", "fun"], "rows": [[1, 3, 24.2], [2, 5, 4.73], ...]}
+
+a row for every K-th iteration, plus the first and the last (a row is written once: when the last iteration is a multiple of K, or K is 1, there is no second copy). The answer stays one object on standard output, **so `opt` still reads no file and writes none** (section 5 stands: no `file_write`, no `dir_write`); nothing changes
+unless `--trace` is given, so every byte the gates compare today stays what it is. A table in the answer is the shape `stats` and `ml` already use (`ml predict` prints `columns` and `rows`), and a reader takes it by its path (`plot --json trace`: measured 2026-11-10 on a document of exactly this shape, with plot at `439e943` of cancho-plot, it reads the `columns` and `rows` at that path and draws `--x iter --y fun,size --with lines`; the path is the top-level `trace` because `opt`'s answer has no `data`).
+
+**Columns by method** (all numbers are JSON numbers as the answer's own are, the shortest text that reads back):
+
+| method | columns | what a row is |
+|---|---|---|
+| nelder-mead | `iter`, `nfev`, `fun` (best vertex), `size` (the largest distance of a vertex from the best), `x0` .. `x{n-1}` (the best vertex) | the state after the iteration scipy's `callback` is called at |
+| bfgs | `iter`, `nfev`, `njev`, `fun`, `gnorm` (the infinity norm of the gradient), `x0` .. | the same |
+| spsa | `iter`, `nfev`, `a_k`, `c_k` | the gains of the step: SPSA never evaluates the objective at its iterate, so `fun` is **not** a column (an extra evaluation for the trace would change `nfev`, and the answer must not depend on `--trace`); (decided: no `--trace-fun`, below) |
+
+**Rules.** (1) The answer, apart from `trace`, is byte for byte the answer without `--trace`: no extra evaluation, in any method. (2) More than 4,999 rows are not kept: `--trace K` with `maxiter / K` above that is `opt.trace-too-long`,
+exit 2, with the repair (a larger K). The limit was 10^4 in the first draft of this section; it is 4,999 because `plot` reads at most 4,999 rows of a curve and 5,000 of a table (`plot.too-many-points` beyond), so a longer trace could be written but not drawn. (3) `--trace` with anything but an integer in range is `opt.usage`. (4) Rows are written in iteration order and never reordered.
+
+**Gates (to write before the code).** The rows of Nelder-Mead and BFGS equal scipy's `callback` iterates and its `fun` value **bit for bit**, on the runs of `scripts/check_scipy.py` and `check_bfgs.py` (the same 65 and 565 runs): the oracle's
+`callback` values are recorded once, since `opt`'s own checks are Python scripts and a Python oracle is what it has. The answer with `--trace 1` and without must be identical outside `trace` on every run of both scripts. Mutants of the code
+that fills a row (the iteration number, the `nfev` at the callback, which vertex is the best, the K-th rule, the first and last row) must each fail one of them. (SPSA: see below for what the gate is.)
+
+**Not in this slice.** Per-evaluation traces (every `fun` call), the simplex vertices, a file output (`--trace-file`: it would need `file_write`, which section 5 says `opt` does not have, so it is a decision for the maintainer, not a default).
+
+**Built (Nelder-Mead), and what building it corrected.** `opt minimize --trace K` is in `lib/nm/nm.cho` and `tools/opt/main.cho`; Adam refuses `--trace` with `opt.flag-not-for-method` (section 15 did not ask for one; it is not in this section's table). Measured 2026-11-10 against scipy 1.17.1:
+
+* **A row is a callback, and scipy calls its callback also for an iteration abandoned because the budget ran out.** Recording scipy's callback on the 65 runs of `scripts/check_scipy.py` showed it: with `--maxfev 40` on Rosenbrock from (-1.2, 1) scipy makes 20 callbacks, the last one after the abandoned iteration (same point and value as the one before, `nfev` 40), and a first version of the code that wrote rows only for finished iterations failed 3 of the 65 runs (the three with `--maxfev` that stop inside an iteration). `iter` is therefore the number of the callback (1, 2, ...), not `nit`: for the default Rosenbrock run the last row is `iter` 84 with `nfev` 159 while the answer says `nit` 85.
+* **The limit on rows is computed before the run, from `min(maxiter, maxfev)`** (each iteration costs at least one evaluation): rows = ceil(bound / K) + 1, and above 4,999 the run is refused (`opt.trace-too-long`). With the defaults (200 N each) any K is accepted; `--maxiter 100000 --trace 1` is refused although a run might stop sooner, because the check must not wait for the end of a run.
+* **`size` is compared with scipy, through its frame.** scipy gives its callback the best vertex only, so the first version of the gate left `size` unchecked (a mutant of it survived). The recorder now reads the `sim` array from the frame of `_minimize_neldermead` that calls the callback (nothing of scipy is changed) and computes the largest distance of a vertex from the best in the same order; `tests/golden/trace_nm.json` has it as the fourth column and the gate compares it exactly. Three mutants of it are killed.
+* **The gate** is a cancho program, `tests/check_trace.cho`, run on `tests/golden/trace_nm.json` (65 runs, 10,643 callback rows of `iter, nfev, fun, size, x...`, recorded once from scipy 1.17.1 by a throwaway script that is not in the repository; the file is data and nothing regenerates it but scipy). `cancho build tests/check_trace.cho --std -o build/check_trace && build/check_trace build/opt < tests/golden/trace_nm.json` runs each case with K = 1 and K = 7 and requires: the bytes before `,"trace":` to equal the answer without `--trace`; the rows to be the golden's first, every K-th and last, each once; `iter`, `nfev`, `fun`, `size` and every coordinate equal as doubles; and five refusals (`--trace` 0, `x`, 1001; too long; Adam). Ten mutants of the row-filling code (the K-th rule, the first row, the last row, `nfev`, `fun`, which vertex, the iteration number, the abandoned iteration, the kept counter) each make it fail. The older gates still pass with the change (`check_scipy` 65, `check_bfgs` 65, `check_cli`, `check_adam`, `check_persistent`; `check_spsa` needs qiskit, which is not installed here).
+
+**BFGS, built.** Rows are `iter, nfev, njev, fun, gnorm, x0 ..` written where scipy calls its callback (right after the iteration counter moves, before the convergence test; an iteration that fails in the line search has no callback, unlike Nelder-Mead's budget stop). `gnorm` is the infinity norm of the gradient at that point, the one the convergence test then uses. The row limit is `maxiter / K` (there is no `maxfev`). Measured 2026-11-10: `tests/golden/trace_bfgs.json` holds the callback rows of the 65 runs of `scripts/check_bfgs.py` (2,093 rows, scipy 1.17.1 with the same sequential dot products as that check; `nfev` and `njev` counted by wrapping the user functions, `fun` and `gnorm` recomputed at the callback's point, since scipy gives its callback only the point). `build/check_trace build/opt bfgs < tests/golden/trace_bfgs.json` passes all 130 runs (K = 1 and 7) and eleven mutants of the BFGS row code each fail it (the K-th rule, the first and last row, `nfev` and `njev` swapped, `fun`, `gnorm`, the point, the iteration number, the kept counter). Unlike Nelder-Mead's `size`, every BFGS column is compared with scipy. `check_bfgs`, `check_scipy` and `check_cli` still pass.
+
+**SPSA, built; `--trace-fun` decided against.** Rows are `iter, nfev, a_k, c_k` (`nfev` at the end of the iteration, 2 per iteration; the answer's own `nfev` is one more, for the final value), every K-th iteration plus the first and the last (`maxiter`); the row limit is `maxiter / K`. There is no `fun` column and no `--trace-fun`: an extra evaluation to fill it would change `nfev` and the objective's call count, which rule 1 forbids, and a caller who wants the value at each iterate can run `opt` again with `--maxiter` k. **Oracle, and what it is not:** `qiskit_algorithms` is not installed here and its callback does not expose the gains (it gives the evaluations, the point, the value, the step size and whether it was accepted), so the gate compares the gains with the formulas of section 11, `a / (iter + A)^0.602` and `c / iter^0.101` (Python's `**`, 1,960 rows from 8 runs in `tests/golden/trace_spsa.json`), to a relative 1e-9 as `check_spsa.py` does for the same `pow` (bit for bit is not claimed: the C library's `pow` and `std.math`'s may round differently in the last bit); `iter` and `nfev` exactly. It does not check the gains against Qiskit's own sequences. `build/check_trace build/opt spsa < tests/golden/trace_spsa.json` passes (16 runs, K = 1 and 7), and seven mutants (the K-th rule, the first and last row, `nfev`, the two gains swapped, the iteration number) each fail it. The prefix rule (the answer outside `trace` unchanged) is checked on every run.
+
+**What a plot of the trace can and cannot do** (measured with cancho-plot `439e943`, on a document shaped as above): `plot --json trace --x iter --y fun,size --with lines --logy` draws two series on a log axis with power-of-ten labels. Two limits follow from the plot, and are stated here so that nobody finds them in a run:
+(a) `--logy` refuses a value that is not above 0 (`plot.log-nonpositive`, with the line of the row); a Nelder-Mead run that reaches exactly `fun` = 0 (for example a sphere from a start on an axis) makes the log chart refuse, and the repair is to plot without `--logy`, not to shift the value;
+(b) `plot` reads one document, so two runs (two methods, two starts) are two charts; putting them in one chart needs their rows in one long table with a column naming the run (`--by`), which `opt` does not print and a caller can build with `stats`/`table` before plotting.

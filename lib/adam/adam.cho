@@ -1,0 +1,87 @@
+edition 7;
+
+module opt.adam;
+
+import opt.objective;
+import opt.persist;
+import std.option;
+import std.math;
+
+// Adam (docs/design.md section 15): per iteration one evaluation of the value and gradient, one step. The work space is one vector of floats:
+//
+//   x   n   the current point
+//   m   n   the first moment
+//   v   n   the second moment
+//
+// and `jac` (the caller's) holds the gradient. The order of operations is `torch.optim.Adam`'s; the powers of beta are running products.
+
+// Run `maxiter` iterations from `x0`; the final point goes into `best` and its gradient into `jac`. Answers (status, value there, evaluations, iterations):
+// status 0 when it ran its iterations, 10 + c when the objective failed with code c (see `objective.value`), and `best` is then the point it failed at.
+pub fn minimize[&h, &i, &x, &c, &p, &a, &s, &o, &j, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], x0: &s [float], maxiter: int, lr: float, beta1: float, beta2: float, eps: float, best: &!o [float], jac: &!j [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float, int, int) {
+    let n = len(x0);
+    let mo = n;
+    let vo = n + n;
+    let work = box_slice(heap, vo + n, 0.0);
+    var status = 0;
+    var nfev = 0;
+    var nit = 0;
+    var fun = 0.0;
+    let w1 = 1.0 - beta1;
+    let w2 = 1.0 - beta2;
+    var b1t = 1.0;
+    var b2t = 1.0;
+    borrow mut work as &!ww in {
+        let w = contents(ww);
+        var k = 0;
+        while k < n {
+            w[k] = x0[k];
+            k = k + 1;
+        }
+        var it = 1;
+        while it <= maxiter && status == 0 {
+            let (c1, f) = objective.value_gradient(heap, io, exec, clock, link, kind, exe, argv, w[0..n], jac);
+            nfev = nfev + 1;
+            if c1 != 0 {
+                status = 10 + c1;
+            } else {
+                b1t = b1t * beta1;
+                b2t = b2t * beta2;
+                let step = lr / (1.0 - b1t);
+                let root = math.sqrt(1.0 - b2t);
+                k = 0;
+                while k < n {
+                    let g = jac[k];
+                    let d = g - w[mo + k];
+                    var mk = w[mo + k] + w1 * d;
+                    if w1 >= 0.5 {
+                        mk = g - d * beta1;
+                    }
+                    let vk = w[vo + k] * beta2 + w2 * g * g;
+                    w[mo + k] = mk;
+                    w[vo + k] = vk;
+                    let denom = math.sqrt(vk) / root + eps;
+                    w[k] = w[k] + (0.0 - step) * (mk / denom);
+                    k = k + 1;
+                }
+                nit = it;
+            }
+            it = it + 1;
+        }
+        if status == 0 {
+            let (c3, f3) = objective.value_gradient(heap, io, exec, clock, link, kind, exe, argv, w[0..n], jac);
+            nfev = nfev + 1;
+            if c3 != 0 {
+                status = 10 + c3;
+            } else {
+                fun = f3;
+            }
+        }
+        k = 0;
+        while k < n {
+            best[k] = w[k];
+            k = k + 1;
+        }
+    }
+    unbox_slice(heap, work);
+    return (status, fun, nfev, nit);
+}

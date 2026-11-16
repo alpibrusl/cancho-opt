@@ -6,7 +6,9 @@ import std.buffer;
 import std.fmt;
 import std.io;
 import std.json;
+import std.option;
 import std.process;
+import opt.persist;
 
 // The objective: one of three built in, or a program that is started for each point (docs/design.md section 4).
 //
@@ -31,6 +33,11 @@ pub fn kind_quadratic() -> [] int {
 
 pub fn kind_absolute() -> [] int {
     return 4;
+}
+
+// a program started once that answers a line for each line it is given (`--persistent`, docs/design.md section 14)
+pub fn kind_persistent() -> [] int {
+    return 5;
 }
 
 // The kind named `name`, or -1.
@@ -169,9 +176,111 @@ fn spawn_value[&h, &i, &x, &c, &p, &a, &v](heap: &!h Heap, io: &!i Io, exec: &x 
     return (code, out);
 }
 
-pub fn value[&h, &i, &x, &c, &p, &a, &v](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], point: &v [float]) -> [heap, exec(""), clock, poll] (int, float) {
+// the line that asks for the value at `point`: its numbers in the shortest form that reads back, one space apart, one newline
+fn point_line[&h, &v](heap: &!h Heap, point: &v [float]) -> [heap] buffer.Buffer {
+    var line = buffer.empty(heap, 64);
+    var k = 0;
+    while k < len(point) {
+        if k > 0 {
+            line = buffer.push(heap, line, byte_of(' '));
+        }
+        region r {
+            let scratch = alloc_slice[r](32, byte_of(0));
+            let n = fmt.float_into(scratch, point[k]);
+            if n > 0 {
+                line = buffer.append(heap, line, scratch[0..n]);
+            }
+        }
+        k = k + 1;
+    }
+    return buffer.push(heap, line, byte_of(10));
+}
+
+// One request on the persistent program: (code, the answer's bytes in `answer`, their count). Codes as for `value`; 2 also when the program is gone.
+fn persistent_ask[&h, &c, &z, &v](heap: &!h Heap, clock: &c Clock, link: &!z option.Option[persist.Link], point: &v [float]) -> [heap, clock, poll, pipe_write, pipe_read] (int, buffer.Buffer, int) {
+    let line = point_line(heap, point);
+    var code = 2;
+    var answer = buffer.empty(heap, 0);
+    var length = 0;
+    borrow line as &lr in {
+        match link {
+            option.Option::Some(l) => {
+                let wait = l.timeout;
+                let (c2, got, nl) = persist.ask(heap, clock, l, buffer.bytes(lr), 65536, wait);
+                buffer.drop(heap, answer);
+                answer = got;
+                code = c2;
+                length = nl;
+            }
+            option.Option::None => {
+                code = 1;
+            }
+        }
+    }
+    buffer.drop(heap, line);
+    return (code, answer, length);
+}
+
+fn persistent_value[&h, &c, &z, &v](heap: &!h Heap, clock: &c Clock, link: &!z option.Option[persist.Link], point: &v [float]) -> [heap, clock, poll, pipe_write, pipe_read] (int, float) {
+    let (code, answer, length) = persistent_ask(heap, clock, link, point);
+    var out = 0.0;
+    var result = code;
+    if code == 0 {
+        borrow answer as &ar in {
+            let (c3, v3) = number_of(buffer.bytes(ar)[0..length]);
+            result = c3;
+            out = v3;
+        }
+    }
+    buffer.drop(heap, answer);
+    return (result, out);
+}
+
+fn persistent_value_gradient[&h, &c, &z, &v, &g](heap: &!h Heap, clock: &c Clock, link: &!z option.Option[persist.Link], point: &v [float], grad: &!g [float]) -> [heap, clock, poll, pipe_write, pipe_read] (int, float) {
+    let (code, answer, length) = persistent_ask(heap, clock, link, point);
+    var out = 0.0;
+    var result = code;
+    if code == 0 {
+        borrow answer as &ar in {
+            region r2 {
+                let nums = alloc_slice[r2](len(point) + 1, 0.0);
+                let count = numbers_of(buffer.bytes(ar)[0..length], nums);
+                if count != len(point) + 1 {
+                    result = 3;
+                } else {
+                    out = nums[0];
+                    var all = true;
+                    var j = 0;
+                    while j <= len(point) {
+                        if nums[j] - nums[j] != 0.0 {
+                            all = false;
+                        }
+                        j = j + 1;
+                    }
+                    if !all {
+                        result = 4;
+                    } else {
+                        result = 0;
+                        j = 0;
+                        while j < len(point) {
+                            grad[j] = nums[1 + j];
+                            j = j + 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    buffer.drop(heap, answer);
+    return (result, out);
+}
+
+pub fn value[&h, &i, &x, &c, &p, &a, &v, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], point: &v [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float) {
     if kind == 0 {
         return spawn_value(heap, io, exec, clock, exe, argv, point);
+    }
+    if kind == 5 {
+        return persistent_value(heap, clock, link, point);
     }
     var total = 0.0;
     var k = 0;
@@ -331,14 +440,17 @@ fn spawn_value_gradient[&h, &i, &x, &c, &p, &a, &v, &g](heap: &!h Heap, io: &!i 
 }
 
 // The value and the gradient at `point`: (code, value), the gradient in `grad`. Codes as for `value`, and 5 for an objective without a gradient.
-pub fn value_gradient[&h, &i, &x, &c, &p, &a, &v, &g](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, kind: int, exe: &p [byte], argv: &a [byte], point: &v [float], grad: &!g [float]) -> [heap, exec(""), clock, poll] (int, float) {
+pub fn value_gradient[&h, &i, &x, &c, &p, &a, &v, &g, &z](heap: &!h Heap, io: &!i Io, exec: &x Exec(""), clock: &c Clock, link: &!z option.Option[persist.Link], kind: int, exe: &p [byte], argv: &a [byte], point: &v [float], grad: &!g [float]) -> [heap, exec(""), clock, poll, pipe_write, pipe_read] (int, float) {
     if kind == 0 {
         return spawn_value_gradient(heap, io, exec, clock, exe, argv, point, grad);
+    }
+    if kind == 5 {
+        return persistent_value_gradient(heap, clock, link, point, grad);
     }
     if kind == 4 {
         return (5, 0.0);
     }
-    let (code, f) = value(heap, io, exec, clock, kind, exe, argv, point);
+    let (code, f) = value(heap, io, exec, clock, link, kind, exe, argv, point);
     if code != 0 {
         return (code, f);
     }

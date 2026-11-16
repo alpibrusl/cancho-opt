@@ -4,6 +4,6 @@ cancho = "51524d206283a5fec6e15e26a1b8d2825971e08a"   # the compiler these sourc
 
 [[bin]]
 name = "opt"
-sources = ["lib/nm", "lib/bfgs", "lib/spsa", "tools/opt"]
+sources = ["lib/nm", "lib/bfgs", "lib/spsa", "lib/adam", "lib/persist", "tools/opt"]
 std = true
 out = "build/opt"

@@ -1,0 +1,291 @@
+edition 7;
+
+module opt.persist;
+
+import std.buffer;
+import std.option;
+import std.process;
+
+// A persistent objective: the program is started once and answers one line for each line it is given (docs/design.md section 14).
+//
+// `ask` answers (code, answer, length): 0 when a whole line came back (`length` bytes of `answer`, without its newline), 2 when the program
+// ended, closed its output, could not be written to or did not answer in time, 3 when it wrote more than one line or more than `most` bytes.
+
+pub struct Link {
+    to: Pipe,
+    from: Pipe,
+    child: Child,
+    poller: Poller,
+    timeout: int,
+}
+
+fn token_output() -> [] int {
+    return 1;
+}
+
+fn token_child() -> [] int {
+    return 3;
+}
+
+// Start `exe` with `argv`, and answer within `timeout` milliseconds each time; (each argument followed by a NUL), its standard input and output piped, its standard error discarded.
+pub fn open[&x, &p, &a](exec: &x Exec(""), exe: &p [byte], argv: &a [byte], timeout: int) -> [exec(""), poll, child_signal] option.Option[Link] {
+    match process.channels() {
+        process.Channels::Failed(e) => {
+            return option.Option::None;
+        }
+        process.Channels::Ok(to_child, child_in, from_child, child_out) => {
+            match exec_spawn(exec, exe, argv, "PATH=/usr/local/bin:/usr/bin:/bin\0HOME=/tmp\0", Stdio::Pipe(child_in), Stdio::Pipe(child_out), Stdio::Null) {
+                Spawned::Failed(e) => {
+                    process.close(to_child, from_child);
+                    return option.Option::None;
+                }
+                Spawned::Ok(child) => {
+                    match poller_new() {
+                        Polling::Failed(e) => {
+                            borrow child as &ch in {
+                                child_kill(ch, 256);
+                            }
+                            pipe_close(to_child);
+                            pipe_close(from_child);
+                            child_wait(child);
+                            return option.Option::None;
+                        }
+                        Polling::Ok(made) => {
+                            var poller = made;
+                            var added = 0;
+                            var pw = to_child;
+                            var pr = from_child;
+                            borrow mut pw as &!a1 in {
+                                pipe_nonblocking(a1);
+                            }
+                            borrow mut pr as &!a2 in {
+                                pipe_nonblocking(a2);
+                            }
+                            borrow mut poller as &!ph in {
+                                borrow pr as &fr in {
+                                    added = poller_add_pipe(ph, fr, token_output(), 1);
+                                }
+                                borrow child as &ch in {
+                                    if added == 0 {
+                                        added = poller_add_child(ph, ch, token_child());
+                                    }
+                                }
+                            }
+                            if added != 0 {
+                                borrow child as &ch in {
+                                    child_kill(ch, 256);
+                                }
+                                pipe_close(pw);
+                                pipe_close(pr);
+                                poller_close(poller);
+                                child_wait(child);
+                                return option.Option::None;
+                            }
+                            return option.Option::Some(Link { to: pw, from: pr, child: child, poller: poller, timeout: timeout });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Read what the program has written so far into `out`, until the pipe has nothing more for now: (the buffer, 0 for nothing more yet, 1 for the end of the stream, 2 for more than `most` bytes).
+fn take[&h, &p, &s](heap: &!h Heap, from: &!p Pipe, scratch: &!s [byte], out: buffer.Buffer, most: int) -> [heap, pipe_read] (buffer.Buffer, int) {
+    var kept = out;
+    while true {
+        match pipe_read(from, scratch) {
+            Received::Data(n) => {
+                var room = 0;
+                borrow kept as &k in {
+                    room = most - buffer.size(k);
+                }
+                if n > room {
+                    return (kept, 2);
+                }
+                kept = buffer.append(heap, kept, scratch[0..n]);
+            }
+            Received::End => {
+                return (kept, 1);
+            }
+            Received::Again => {
+                return (kept, 0);
+            }
+            Received::Failed(e) => {
+                return (kept, 1);
+            }
+        }
+    }
+    return (kept, 0);
+}
+
+// the index of the first newline in `bytes`, or -1
+fn newline_in[&s](bytes: &s [byte]) -> [] int {
+    var k = 0;
+    while k < len(bytes) {
+        if int_of(bytes[k]) == 10 {
+            return k;
+        }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+// Write `line` (which ends in a newline) and read the one line that answers it, for at most `timeout` milliseconds.
+pub fn ask[&h, &c, &l, &s](heap: &!h Heap, clock: &c Clock, link: &!l Link, line: &s [byte], most: int, timeout: int) -> [heap, clock, poll, pipe_write, pipe_read] (int, buffer.Buffer, int) {
+    let deadline = clock_ms(clock) + timeout;
+    var out = buffer.empty(heap, 256);
+    var code = 0;
+    var written = 0;
+    while written < len(line) && code == 0 {
+        match pipe_write(link.to, line[written..len(line)]) {
+            Sent::Wrote(m) => {
+                written = written + m;
+            }
+            Sent::Again => {
+                code = 2;
+            }
+            Sent::Failed(e) => {
+                code = 2;
+            }
+        }
+    }
+    var nl = 0 - 1;
+    var gone = false;
+    region r {
+        let scratch = alloc_slice[r](4096, byte_of(0));
+        let events = alloc_slice[r](16, 0);
+        while code == 0 && nl < 0 {
+            let left = deadline - clock_ms(clock);
+            if left <= 0 {
+                code = 2;
+            } else {
+                var n = poller_wait(link.poller, events, left);
+                if n < 0 {
+                    code = 2;
+                    n = 0;
+                }
+                var k = 0;
+                var ended = false;
+                while k < n && code == 0 {
+                    let token = events[2 * k];
+                    if token == token_child() {
+                        gone = true;
+                    }
+                    if token == token_output() {
+                        let (kept, found) = take(heap, link.from, scratch, out, most);
+                        out = kept;
+                        if found == 2 {
+                            code = 3;
+                        }
+                        if found == 1 {
+                            ended = true;
+                        }
+                    }
+                    k = k + 1;
+                }
+                if code == 0 && gone && !ended {
+                    // what the program wrote before it exited is in the pipe now
+                    let (kept, found) = take(heap, link.from, scratch, out, most);
+                    out = kept;
+                    if found == 2 {
+                        code = 3;
+                    }
+                    ended = true;
+                }
+                if code == 0 {
+                    borrow out as &or in {
+                        nl = newline_in(buffer.bytes(or));
+                    }
+                    if nl < 0 && ended {
+                        code = 2;
+                    }
+                }
+            }
+        }
+    }
+    if code == 0 {
+        // one answer to one request: nothing may follow the newline
+        borrow out as &or in {
+            let all = buffer.bytes(or);
+            if nl + 1 < len(all) {
+                code = 3;
+            }
+        }
+    }
+    return (code, out, nl);
+}
+
+// End the session: close the program's input, give it five seconds to exit, then kill it. Its status is not looked at: every answer it was
+// asked for has been read.
+pub fn close[&c](clock: &c Clock, link: Link) -> [clock, poll, child_signal, pipe_read] int {
+    let Link { to, from, child, poller, timeout } = link;
+    pipe_close(to);
+    var p = poller;
+    var pipe_in = from;
+    let deadline = clock_ms(clock) + 5000;
+    var exited = false;
+    var timed = false;
+    region r {
+        let scratch = alloc_slice[r](4096, byte_of(0));
+        let events = alloc_slice[r](16, 0);
+        while !exited && !timed {
+            let left = deadline - clock_ms(clock);
+            if left <= 0 {
+                timed = true;
+            } else {
+                var n = 0;
+                borrow mut p as &!ph in {
+                    n = poller_wait(ph, events, left);
+                }
+                if n < 0 {
+                    timed = true;
+                    n = 0;
+                }
+                var k = 0;
+                while k < n {
+                    let token = events[2 * k];
+                    if token == token_child() {
+                        exited = true;
+                    }
+                    if token == token_output() {
+                        // read and drop what a program writes on its way out, so it is not blocked
+                        borrow mut pipe_in as &!pw in {
+                            let _dropped = pipe_read(pw, scratch);
+                        }
+                    }
+                    k = k + 1;
+                }
+            }
+        }
+    }
+    if !exited {
+        borrow child as &ch in {
+            child_kill(ch, 256);
+        }
+    }
+    poller_close(p);
+    pipe_close(pipe_in);
+    let _status = child_wait(child);
+    return 0;
+}
+
+// did `open` start the program?
+pub fn is_open[&l](link: &l option.Option[Link]) -> [] bool {
+    match link {
+        option.Option::Some(l) => {
+            return true;
+        }
+        option.Option::None => {
+            return false;
+        }
+    }
+}
+
+// The link for an objective: started when `want`, else none.
+pub fn start[&x, &p, &a](exec: &x Exec(""), want: bool, exe: &p [byte], argv: &a [byte], timeout: int) -> [exec(""), poll, child_signal] option.Option[Link] {
+    if !want {
+        return option.Option::None;
+    }
+    return open(exec, exe, argv, timeout);
+}
