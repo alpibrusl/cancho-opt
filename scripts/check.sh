@@ -1,0 +1,17 @@
+#!/bin/sh
+# The gate that CI runs: CANCHO=<the compiler of cancho.toml> sh scripts/check.sh   (needs python3 with numpy and scipy 1.18.1; scipy's numbers are what the gates compare with)
+# Run and found green on 2026-11-16: the build; check_cli (no input reaches a panic); check_scipy (Nelder-Mead against scipy, bit for bit) with its mutants (each must be killed);
+# check_bfgs (BFGS against scipy with sequential dot products, bit for bit) with its mutants and the wide run.
+# Not run here: check_spsa (needs qiskit-algorithms, not installed or verified), the benchmarks, and any platform other than Linux x86-64.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+: "${CANCHO:=cancho}"
+export CANCHO
+cd "$here"
+"$CANCHO" build --bin opt >/dev/null
+export OPT="$here/build/opt"
+python3 scripts/check_cli.py
+python3 scripts/check_scipy.py --mutants
+python3 scripts/check_bfgs.py --mutants
+python3 scripts/check_bfgs.py --wide
+echo "gate: ok"
